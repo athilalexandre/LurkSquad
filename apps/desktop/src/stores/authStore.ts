@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
 import { apiFetch, setMemoryAccessToken } from '../services/api.js';
+import { saveSecureToken, getSecureToken, deleteSecureToken } from '../services/token.js';
 
 export interface User {
   id: string;
@@ -36,7 +36,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ isInitializing: true, error: null });
     try {
       // Check if secure refresh token exists in keychain
-      const refreshToken = await invoke<string>('get_secure_token');
+      const refreshToken = await getSecureToken();
       
       if (!refreshToken) {
         set({ isInitializing: false, isAuthenticated: false, user: null });
@@ -52,7 +52,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
       if (!res.ok) {
         // Token must be expired or invalid
-        await invoke('delete_secure_token');
+        await deleteSecureToken();
         set({ isInitializing: false, isAuthenticated: false, user: null });
         return;
       }
@@ -83,7 +83,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       });
 
       setMemoryAccessToken(data.accessToken);
-      await invoke('save_secure_token', { token: data.refreshToken });
+      await saveSecureToken(data.refreshToken);
 
       set({
         user: data.user,
@@ -113,7 +113,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   logout: async () => {
     try {
-      const refreshToken = await invoke<string>('get_secure_token');
+      const refreshToken = await getSecureToken();
       if (refreshToken) {
         await apiFetch('/auth/logout', {
           method: 'POST',
@@ -124,7 +124,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (err) {
       console.error(err);
     } finally {
-      await invoke('delete_secure_token');
+      await deleteSecureToken();
       setMemoryAccessToken(null);
       set({
         user: null,

@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { getMemoryAccessToken } from '../services/api.js';
 import { useCoinStore } from './coinStore.js';
 
+import { useAuctionStore } from './auctionStore.js';
+
 interface WSState {
   socket: WebSocket | null;
   status: 'disconnected' | 'connecting' | 'connected';
@@ -58,6 +60,15 @@ export const useWSStore = create<WSState>((set, get) => {
           if (message.type === 'heartbeat:ack') {
             // Update user balance in coinStore
             useCoinStore.getState().updateBalance(message.balance);
+          } else if (message.type === 'auction:bid') {
+            useAuctionStore.getState().setActiveAuction(message.auction);
+          } else if (message.type === 'auction:started') {
+            useAuctionStore.getState().fetchActiveAuction();
+          } else if (message.type === 'auction:resolved') {
+            useAuctionStore.getState().setActiveAuction(null);
+            useAuctionStore.getState().setActiveHighlight(message.slot);
+          } else if (message.type === 'highlight:expired') {
+            useAuctionStore.getState().setActiveHighlight(null);
           } else if (message.error) {
             set({ error: message.error });
           }

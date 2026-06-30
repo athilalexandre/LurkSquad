@@ -19,17 +19,19 @@ export async function processHeartbeat(
   const sessionKey = `${userId}:${channelId}`;
 
   // Get app configuration
-  const config = await prisma.appConfig.findUnique({
+  const globalConfig = await prisma.appConfig.findUnique({
     where: { id: 'global' },
-  }) || {
-    coinsPerMinute: 1.0,
-    maxDailyCoins: 1000,
-    heartbeatInterval: 30,
-    heartbeatTimeout: 90,
+  });
+
+  const config = {
+    coinsPerMinute: globalConfig?.coinsPerMinute ?? 1.0,
+    vipMultiplier: globalConfig?.vipMultiplier ?? 1.5,
+    maxDailyCoins: globalConfig?.maxDailyCoins ?? 1000,
+    heartbeatInterval: globalConfig?.heartbeatInterval ?? 30,
+    heartbeatTimeout: globalConfig?.heartbeatTimeout ?? 90,
   };
 
   const heartbeatTimeoutMs = config.heartbeatTimeout * 1000;
-  const coinsPerMinute = Math.floor(config.coinsPerMinute);
 
   // Validate that user is APPROVED
   const user = await prisma.user.findUnique({
@@ -40,6 +42,10 @@ export async function processHeartbeat(
   if (!user || user.status !== 'APPROVED') {
     throw new Error('Usuário não autorizado ou não aprovated');
   }
+
+  // Calculate coins per minute with VIP multiplier
+  const multiplier = user.plan === 'VIP' ? config.vipMultiplier : 1.0;
+  const coinsPerMinute = Math.floor(config.coinsPerMinute * multiplier);
 
   // Validate channel exists and is active
   const channel = await prisma.channel.findUnique({
@@ -117,82 +123,55 @@ export async function processHeartbeat(
   const heartbeatsPerMinute = Math.ceil(60 / config.heartbeatInterval);
   if (currentCount % heartbeatsPerMinute === 0) {
     newMinutes += 1;
+    earnedCoins = coinsPerMinute;
 
-    // Check daily limit for user
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const transactionsToday = await prisma.coinTransaction.aggregate({
-      where: {
-        userId,
-        type: 'EARNED',
-        createdAt: {
-          gte: today,
-        },
-      },
-      _sum: {
-        amount: true,
-      },
-    });
-
-    const earnedToday = transactionsToday._sum.amount ?? 0;
-
-    if (earnedToday < config.maxDailyCoins) {
-      earnedCoins = coinsPerMinute;
-      
-      // Ensure we don't exceed the limit on this transaction
-      const remainingLimit = config.maxDailyCoins - earnedToday;
-      const actualReward = Math.min(earnedCoins, remainingLimit);
-
-      if (actualReward > 0) {
-        // Run database transaction to update watch session and credit user balance with ledger
-        const transactionResult = await prisma.$transaction(async (tx) => {
-          // Update Watch Session
-          await tx.watchSession.update({
-            where: { id: watchSession!.id },
-            data: {
-              totalMinutes: newMinutes,
-              coinsEarned: {
-                increment: actualReward,
-              },
+    if (earnedCoins > 0) {
+      // Run database transaction to update watch session and credit user balance with ledger
+      const transactionResult = await prisma.$transaction(async (tx) => {
+        // Update Watch Session
+        await tx.watchSession.update({
+          where: { id: watchSession!.id },
+          data: {
+            totalMinutes: newMinutes,
+            coinsEarned: {
+              increment: earnedCoins,
             },
-          });
-
-          // Update User Balance
-          const balance = await tx.coinBalance.upsert({
-            where: { userId },
-            update: {
-              balance: {
-                increment: actualReward,
-              },
-            },
-            create: {
-              userId,
-              balance: actualReward,
-              reserved: 0,
-            },
-          });
-
-          // Add Ledger Transaction
-          await tx.coinTransaction.create({
-            data: {
-              userId,
-              type: 'EARNED',
-              amount: actualReward,
-              balanceAfter: balance.balance,
-              reason: `Ganhou moedas por assistir ao canal ${channel.slug}`,
-              sourceId: watchSession!.id,
-            },
-          });
-
-          return balance.balance;
+          },
         });
 
-        userBalance = transactionResult;
-      }
+        // Update User Balance
+        const balance = await tx.coinBalance.upsert({
+          where: { userId },
+          update: {
+            balance: {
+              increment: earnedCoins,
+            },
+          },
+          create: {
+            userId,
+            balance: earnedCoins,
+            reserved: 0,
+          },
+        });
+
+        // Add Ledger Transaction
+        await tx.coinTransaction.create({
+          data: {
+            userId,
+            type: 'EARNED',
+            amount: earnedCoins,
+            balanceAfter: balance.balance,
+            reason: `Ganhou moedas por assistir ao canal ${channel.slug}`,
+            sourceId: watchSession!.id,
+          },
+        });
+
+        return balance.balance;
+      });
+
+      userBalance = transactionResult;
     } else {
-      status = 'daily_limit_reached';
-      // Just update minutes watched without adding coins
+      // Just update minutes watched
       await prisma.watchSession.update({
         where: { id: watchSession!.id },
         data: { totalMinutes: newMinutes },

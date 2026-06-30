@@ -23,6 +23,7 @@ interface AdminUser {
   displayName: string;
   role: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'BANNED';
+  plan?: 'STANDARD' | 'VIP';
   createdAt: string;
   coinBalance?: {
     balance: number;
@@ -62,7 +63,7 @@ export function AdminPage({ onNavigateBack }: AdminPageProps) {
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   
-  const [activeTab, setActiveTab] = useState<'users' | 'coins' | 'audit'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'coins' | 'audit' | 'auctions'>('users');
   const [loading, setLoading] = useState(false);
 
   // Coin Adjustment Form State
@@ -72,6 +73,52 @@ export function AdminPage({ onNavigateBack }: AdminPageProps) {
   const [adjustLoading, setAdjustLoading] = useState(false);
   const [adjustSuccess, setAdjustSuccess] = useState<string | null>(null);
   const [adjustError, setAdjustError] = useState<string | null>(null);
+
+  // Auction Form State
+  const [auctionTitle, setAuctionTitle] = useState('');
+  const [auctionDuration, setAuctionDuration] = useState('10');
+  const [auctionMinBid, setAuctionMinBid] = useState('50');
+  const [auctionIncrement, setAuctionIncrement] = useState('10');
+  const [auctionHighlightDuration, setAuctionHighlightDuration] = useState('60');
+  const [auctionLoading, setAuctionLoading] = useState(false);
+
+  const handleCreateAuction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!auctionTitle) return;
+    setAuctionLoading(true);
+    try {
+      await apiFetch('/admin/auctions', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: auctionTitle,
+          durationMinutes: parseInt(auctionDuration),
+          minBid: parseInt(auctionMinBid),
+          bidIncrement: parseInt(auctionIncrement),
+          highlightDurationMinutes: parseInt(auctionHighlightDuration),
+        }),
+      });
+      alert('Leilão criado com sucesso e ativado!');
+      setAuctionTitle('');
+    } catch (err: any) {
+      alert(err.message || 'Erro ao criar leilão');
+    } finally {
+      setAuctionLoading(false);
+    }
+  };
+
+  const handleToggleUserPlan = async (userId: string, currentPlan: 'STANDARD' | 'VIP') => {
+    const nextPlan = currentPlan === 'STANDARD' ? 'VIP' : 'STANDARD';
+    try {
+      await apiFetch(`/admin/users/${userId}/plan`, {
+        method: 'PUT',
+        body: JSON.stringify({ plan: nextPlan }),
+      });
+      const usersData = await apiFetch<{ users: AdminUser[] }>('/admin/users');
+      setUsers(usersData.users);
+    } catch (err: any) {
+      alert(err.message || 'Erro ao atualizar plano do usuário');
+    }
+  };
 
   const fetchAdminData = async () => {
     setLoading(true);
@@ -192,6 +239,15 @@ export function AdminPage({ onNavigateBack }: AdminPageProps) {
             <FileSpreadsheet size={16} />
             Logs de Auditoria
           </button>
+
+          <button
+            type="button"
+            style={{ ...styles.tabBtn, borderBottomColor: activeTab === 'auctions' ? '#8b5cf6' : 'transparent', color: activeTab === 'auctions' ? '#fff' : '#9ca3af' }}
+            onClick={() => setActiveTab('auctions')}
+          >
+            <ShieldCheck size={16} />
+            Gerenciar Leilões
+          </button>
         </div>
 
         {/* TAB CONTENTS */}
@@ -212,6 +268,7 @@ export function AdminPage({ onNavigateBack }: AdminPageProps) {
                     <th style={styles.tableTh}>Nome / Username</th>
                     <th style={styles.tableTh}>E-mail</th>
                     <th style={styles.tableTh}>Nível (Role)</th>
+                    <th style={styles.tableTh}>Plano</th>
                     <th style={styles.tableTh}>Status Acesso</th>
                     <th style={styles.tableTh}>Moedas (Saldo)</th>
                     <th style={styles.tableTh}>Ações de Moderação</th>
@@ -231,6 +288,21 @@ export function AdminPage({ onNavigateBack }: AdminPageProps) {
                         <span style={{ ...styles.roleBadge, color: u.role === 'OWNER' || u.role === 'ADMIN' ? '#8b5cf6' : '#9ca3af' }}>
                           {u.role}
                         </span>
+                      </td>
+                      <td style={styles.tableTd}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            fontSize: '0.75rem',
+                            color: u.plan === 'VIP' ? '#f59e0b' : '#9ca3af',
+                            borderColor: u.plan === 'VIP' ? 'rgba(245,158,11,0.3)' : 'var(--border-color)',
+                          }}
+                          onClick={() => handleToggleUserPlan(u.id, u.plan || 'STANDARD')}
+                        >
+                          {u.plan === 'VIP' ? '🌟 VIP' : 'Standard'}
+                        </button>
                       </td>
                       <td style={styles.tableTd}>
                         <span style={{
@@ -410,6 +482,92 @@ export function AdminPage({ onNavigateBack }: AdminPageProps) {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* TAB 4: LEILÕES */}
+          {activeTab === 'auctions' && (
+            <div style={styles.pane}>
+              <div className="glass-card" style={styles.formCard}>
+                <h3 style={styles.formTitle}>Iniciar Novo Leilão</h3>
+                <p style={styles.formSubtitle}>Crie um leilão de destaque de canal em tempo real para os usuários competirem.</p>
+
+                <form onSubmit={handleCreateAuction} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="auc-title">Título do Leilão</label>
+                    <input
+                      id="auc-title"
+                      className="input-field"
+                      type="text"
+                      placeholder="Ex: Destaque da Noite - Hora de Pico!"
+                      value={auctionTitle}
+                      onChange={(e) => setAuctionTitle(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '1rem' }}>
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label" htmlFor="auc-dur">Duração (minutos)</label>
+                      <input
+                        id="auc-dur"
+                        className="input-field"
+                        type="number"
+                        value={auctionDuration}
+                        onChange={(e) => setAuctionDuration(e.target.value)}
+                        required
+                      />
+                    </div>
+                    
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label" htmlFor="auc-hl">Duração do Destaque (minutos)</label>
+                      <input
+                        id="auc-hl"
+                        className="input-field"
+                        type="number"
+                        value={auctionHighlightDuration}
+                        onChange={(e) => setAuctionHighlightDuration(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '1rem' }}>
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label" htmlFor="auc-min">Lance Mínimo Inicial</label>
+                      <input
+                        id="auc-min"
+                        className="input-field"
+                        type="number"
+                        value={auctionMinBid}
+                        onChange={(e) => setAuctionMinBid(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label" htmlFor="auc-inc">Incremento Mínimo</label>
+                      <input
+                        id="auc-inc"
+                        className="input-field"
+                        type="number"
+                        value={auctionIncrement}
+                        onChange={(e) => setAuctionIncrement(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    style={{ marginTop: '0.5rem', alignSelf: 'flex-start' }}
+                    disabled={auctionLoading || !auctionTitle}
+                  >
+                    {auctionLoading ? 'Criando...' : 'Iniciar Leilão'}
+                  </button>
+                </form>
+              </div>
             </div>
           )}
         </div>

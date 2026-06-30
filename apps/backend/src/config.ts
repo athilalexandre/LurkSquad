@@ -17,7 +17,7 @@ export const config = {
   },
 
   cors: {
-    origin: (process.env.CORS_ORIGIN || 'tauri://localhost').split(','),
+    origin: (process.env.CORS_ORIGIN || 'tauri://localhost,http://tauri.localhost,http://localhost:1420').split(','),
   },
 
   rateLimit: {

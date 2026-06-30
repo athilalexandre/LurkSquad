@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "desktop",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "LurkSquad",
+        "width": 1000,
+        "height": 700
       }
     ],
     "security": {

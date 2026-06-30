@@ -17,6 +17,11 @@ enum UserRole {
   OWNER
 }
 
+enum UserPlan {
+  STANDARD
+  VIP
+}
+
 enum UserStatus {
   PENDING
   APPROVED
@@ -49,6 +54,7 @@ model User {
   passwordHash String
   role         UserRole   @default(USER)
   status       UserStatus @default(PENDING)
+  plan         UserPlan   @default(STANDARD)
 
   // 2FA (admin only, future)
   totpSecret  String?
@@ -104,6 +110,7 @@ model Channel {
 
   watchSessions WatchSession[]
   auctionSlots  AuctionSlot[]
+  auctionBids   AuctionBid[]
 
   @@index([slug])
 }
@@ -199,6 +206,8 @@ model AuctionBid {
   amount    Int
   isWinning Boolean @default(false)
   refunded  Boolean @default(false)
+  channelId String?
+  channel   Channel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -247,6 +256,7 @@ model AppConfig {
   id String @id @default("global")
 
   coinsPerMinute    Float @default(1)
+  vipMultiplier     Float @default(1.5)
   maxDailyCoins     Int   @default(1000)
   heartbeatInterval Int   @default(30)
   heartbeatTimeout  Int   @default(90)

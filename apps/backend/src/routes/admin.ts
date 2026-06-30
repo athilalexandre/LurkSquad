@@ -10,6 +10,18 @@ const adjustCoinsSchema = z.object({
   reason: z.string().min(3, 'A justificativa deve ter pelo menos 3 caracteres').max(255),
 });
 
+const updateUserPlanSchema = z.object({
+  plan: z.enum(['STANDARD', 'VIP']),
+});
+
+const createAuctionSchema = z.object({
+  title: z.string().min(1, 'Título é obrigatório'),
+  durationMinutes: z.number().int().min(1, 'Duração deve ser de pelo menos 1 minuto'),
+  minBid: z.number().int().min(1).default(50),
+  bidIncrement: z.number().int().min(1).default(10),
+  highlightDurationMinutes: z.number().int().min(1).default(60),
+});
+
 export async function adminRoutes(fastify: FastifyInstance) {
   // Apply auth and admin check globally to all routes in this plugin
   fastify.addHook('preHandler', authenticate);
@@ -25,6 +37,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         displayName: true,
         role: true,
         status: true,
+        plan: true,
         createdAt: true,
         coinBalance: {
           select: {
@@ -269,5 +282,92 @@ export async function adminRoutes(fastify: FastifyInstance) {
       take: 100
     });
     return reply.send({ logs });
+  });
+
+  // 9. Update user plan (Standard / VIP)
+  fastify.put('/users/:id/plan', async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const { plan } = updateUserPlanSchema.parse(request.body);
+      const actorId = request.user!.userId;
+
+      const targetUser = await prisma.user.findUnique({ where: { id } });
+      if (!targetUser) {
+        return reply.status(404).send({ error: 'Usuário não encontrado' });
+      }
+
+      const updatedUser = await prisma.user.update({
+        where: { id },
+        data: { plan },
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'user.update_plan',
+        targetId: id,
+        details: { plan },
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, user: updatedUser });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.status(400).send({ error: error.errors[0].message });
+      }
+      return reply.status(400).send({ error: 'Erro ao atualizar plano' });
+    }
+  });
+
+  // 10. Create new manual auction
+  fastify.post('/auctions', async (request, reply) => {
+    try {
+      const { title, durationMinutes, minBid, bidIncrement, highlightDurationMinutes } = createAuctionSchema.parse(request.body);
+      const actorId = request.user!.userId;
+
+      const startsAt = new Date();
+      const endsAt = new Date(Date.now() + durationMinutes * 60 * 1000);
+
+      // Cancel any active auctions first to prevent multiple simultaneous auctions
+      await prisma.auction.updateMany({
+        where: { status: 'ACTIVE' },
+        data: { status: 'ENDED' },
+      });
+
+      const auction = await prisma.auction.create({
+        data: {
+          title,
+          status: 'ACTIVE',
+          minBid,
+          bidIncrement,
+          startsAt,
+          endsAt,
+          highlightDuration: highlightDurationMinutes,
+          createdBy: actorId,
+        }
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'auction.create',
+        targetId: auction.id,
+        details: { title, durationMinutes, minBid, bidIncrement },
+        ipAddress: request.ip
+      });
+
+      // Notify clients of started auction
+      const { broadcastToAll } = await import('../ws/handler.js');
+      broadcastToAll({
+        type: 'auction:started',
+        auctionId: auction.id,
+      });
+
+      return reply.send({ success: true, auction });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.status(400).send({ error: error.errors[0].message });
+      }
+      fastify.log.error(error);
+      return reply.status(400).send({ error: 'Erro ao criar leilão' });
+    }
   });
 }

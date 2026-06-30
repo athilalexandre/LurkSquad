@@ -4,6 +4,31 @@ import { useChannelStore } from '../stores/channelStore.js';
 import { useCoinStore } from '../stores/coinStore.js';
 import { useWSStore } from '../stores/wsStore.js';
 import { useHeartbeat } from '../hooks/useHeartbeat.js';
+import { useAuctionStore } from '../stores/auctionStore.js';
+
+function AuctionTimer({ endsAt, onExpire }: { endsAt: string; onExpire: () => void }) {
+  const [timeLeft, setTimeLeft] = useState('');
+
+  useEffect(() => {
+    const calculateTime = () => {
+      const difference = new Date(endsAt).getTime() - Date.now();
+      if (difference <= 0) {
+        setTimeLeft('Encerrado');
+        onExpire();
+        return;
+      }
+      const minutes = Math.floor((difference / 1000 / 60) % 60);
+      const seconds = Math.floor((difference / 1000) % 60);
+      setTimeLeft(`${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
+    };
+
+    calculateTime();
+    const interval = setInterval(calculateTime, 1000);
+    return () => clearInterval(interval);
+  }, [endsAt, onExpire]);
+
+  return <span style={{ fontFamily: 'monospace', fontWeight: 'bold' }}>{timeLeft}</span>;
+}
 import {
   LogOut,
   Coins,
@@ -27,11 +52,36 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
   const { channels, isLoading: channelsLoading, fetchChannels, addChannel, removeChannel } = useChannelStore();
   const { balance, fetchBalance } = useCoinStore();
   const { status: wsStatus, connect: wsConnect, disconnect: wsDisconnect } = useWSStore();
+  const { activeAuction, activeHighlight, fetchActiveAuction, placeBid: storePlaceBid } = useAuctionStore();
 
   const [newChannelSlug, setNewChannelSlug] = useState('');
   const [filterSlug, setFilterSlug] = useState<string>('all');
   const [adding, setAdding] = useState(false);
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
+
+  const [bidChannelId, setBidChannelId] = useState('');
+  const [bidAmount, setBidAmount] = useState(0);
+
+  const handlePlaceBid = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAuction) return;
+    if (!bidChannelId) {
+      alert('Selecione um canal para destacar');
+      return;
+    }
+    if (!bidAmount) {
+      alert('Insira o valor do lance');
+      return;
+    }
+
+    try {
+      await storePlaceBid(activeAuction.id, bidChannelId, bidAmount);
+      setBidAmount(0);
+      alert('Lance efetuado com sucesso!');
+    } catch (err: any) {
+      alert(err.message || 'Erro ao dar lance');
+    }
+  };
 
 
   // 1. WebSocket & Initial fetches
@@ -39,17 +89,19 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
     wsConnect();
     fetchChannels();
     fetchBalance();
+    fetchActiveAuction();
 
     const fetchInterval = setInterval(() => {
       fetchChannels();
       fetchBalance();
+      fetchActiveAuction();
     }, 45 * 1000); // refresh metadata every 45s
 
     return () => {
       clearInterval(fetchInterval);
       wsDisconnect();
     };
-  }, [wsConnect, wsDisconnect, fetchChannels, fetchBalance]);
+  }, [wsConnect, wsDisconnect, fetchChannels, fetchBalance, fetchActiveAuction]);
 
   // 2. Identify channels to watch (live and active)
   const liveChannels = useMemo(() => {
@@ -97,12 +149,24 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
     }
   };
 
-  // Filter channels to display in the main grid
+  // Filter and sort channels to display in the main grid (prioritizing the active highlight)
   const visibleChannels = useMemo(() => {
-    const active = channels.filter((c) => c.isActive);
-    if (filterSlug === 'all') return active;
-    return active.filter((c) => c.slug === filterSlug);
-  }, [channels, filterSlug]);
+    let active = channels.filter((c) => c.isActive);
+    if (filterSlug !== 'all') {
+      active = active.filter((c) => c.slug === filterSlug);
+    }
+    
+    // Sort so highlighted channel is first
+    if (activeHighlight && filterSlug === 'all') {
+      const idx = active.findIndex((c) => c.id === activeHighlight.channelId);
+      if (idx !== -1) {
+        const copy = [...active];
+        const [highlighted] = copy.splice(idx, 1);
+        return [highlighted, ...copy];
+      }
+    }
+    return active;
+  }, [channels, filterSlug, activeHighlight]);
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER';
 
@@ -263,6 +327,71 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
 
         {/* MAIN EMBEDS GRID */}
         <main style={styles.mainGrid}>
+          {/* Active Auction Banner */}
+          {activeAuction ? (
+            <div style={styles.auctionBanner}>
+              <div style={styles.auctionHeader}>
+                <span style={styles.auctionTag}>🔨 LEILÃO DE DESTAQUE</span>
+                <div style={styles.auctionTitleGroup}>
+                  <h3 style={styles.auctionTitle}>{activeAuction.title}</h3>
+                  <span style={styles.auctionTimer}>
+                    Tempo restante: <AuctionTimer endsAt={activeAuction.endsAt} onExpire={fetchActiveAuction} />
+                  </span>
+                </div>
+              </div>
+              
+              <div style={styles.auctionContent}>
+                <div style={styles.auctionStatus}>
+                  <div>
+                    <span style={styles.auctionLabel}>LANCE MÁXIMO ATUAL</span>
+                    <div style={styles.auctionValue}>
+                      {activeAuction.bids.length > 0 
+                        ? `${activeAuction.bids[0].amount} moedas por @${activeAuction.bids[0].user.displayName}` 
+                        : `${activeAuction.minBid} moedas (Aguardando lances)`
+                      }
+                    </div>
+                  </div>
+                  <div>
+                    <span style={styles.auctionLabel}>INCREMENTO MÍNIMO</span>
+                    <div style={styles.auctionSubvalue}>+{activeAuction.bidIncrement} moedas</div>
+                  </div>
+                </div>
+
+                {/* Place Bid Form */}
+                <form onSubmit={handlePlaceBid} style={styles.bidForm}>
+                  <select
+                    className="input-field"
+                    style={styles.bidSelect}
+                    value={bidChannelId}
+                    onChange={(e) => setBidChannelId(e.target.value)}
+                  >
+                    <option value="">Destacar Canal...</option>
+                    {channels.filter(c => c.isActive).map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.displayName || c.slug}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="input-field"
+                    style={styles.bidInput}
+                    type="number"
+                    placeholder="Valor"
+                    value={bidAmount || ''}
+                    onChange={(e) => setBidAmount(parseInt(e.target.value) || 0)}
+                  />
+                  <button type="submit" className="btn btn-primary" style={styles.bidBtn}>
+                    Dar Lance
+                  </button>
+                </form>
+              </div>
+            </div>
+          ) : activeHighlight ? (
+            <div style={styles.highlightBanner}>
+              <span>🌟 O canal <strong>@{activeHighlight.channel.displayName || activeHighlight.channel.slug}</strong> está destacado em primeiro lugar por vencer o leilão! Expira em: <AuctionTimer endsAt={activeHighlight.endsAt} onExpire={fetchActiveAuction} /></span>
+            </div>
+          ) : null}
+
           {visibleChannels.length === 0 ? (
             <div style={styles.emptyGrid}>
               <Tv size={48} color="#4b5563" style={{ marginBottom: '1rem' }} />
@@ -277,6 +406,8 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
                 // If expanded mode is active and this card is NOT the expanded card, hide it
                 if (expandedSlug && !isExpanded) return null;
 
+                const isHighlighted = activeHighlight?.channelId === channel.id;
+
                 return (
                   <div
                     key={channel.id}
@@ -285,7 +416,14 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
                       ...styles.card,
                       gridColumn: isExpanded ? '1 / -1' : 'auto',
                       gridRow: isExpanded ? '1 / -1' : 'auto',
-                      borderColor: channel.isLive ? 'rgba(16, 185, 129, 0.2)' : 'var(--border-color)',
+                      borderColor: isHighlighted
+                        ? '#8b5cf6'
+                        : channel.isLive
+                        ? 'rgba(16, 185, 129, 0.2)'
+                        : 'var(--border-color)',
+                      boxShadow: isHighlighted
+                        ? '0 0 20px rgba(139, 92, 246, 0.45), inset 0 0 10px rgba(139, 92, 246, 0.25)'
+                        : 'none',
                     }}
                   >
                     {/* Card Header */}
@@ -709,5 +847,115 @@ const styles = {
     fontSize: '0.7rem',
     color: '#10b981',
     fontWeight: 600,
+  },
+  auctionBanner: {
+    background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(18, 18, 30, 0.8) 100%)',
+    border: '1px solid rgba(139, 92, 246, 0.3)',
+    borderRadius: '12px',
+    padding: '1.25rem',
+    marginBottom: '1.5rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '1rem',
+  },
+  auctionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap' as const,
+    gap: '0.75rem',
+  },
+  auctionTag: {
+    fontSize: '0.7rem',
+    fontWeight: 800,
+    color: '#a78bfa',
+    background: 'rgba(139, 92, 246, 0.2)',
+    padding: '0.2rem 0.6rem',
+    borderRadius: '4px',
+    letterSpacing: '0.05em',
+  },
+  auctionTitleGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '1rem',
+    flex: 1,
+    justifyContent: 'space-between',
+  },
+  auctionTitle: {
+    fontSize: '1.1rem',
+    fontWeight: 700,
+    color: '#fff',
+    margin: 0,
+  },
+  auctionTimer: {
+    fontSize: '0.9rem',
+    color: '#a78bfa',
+  },
+  auctionContent: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap' as const,
+    gap: '1.5rem',
+    borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+    paddingTop: '1rem',
+  },
+  auctionStatus: {
+    display: 'flex',
+    gap: '2rem',
+  },
+  auctionLabel: {
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    color: '#9ca3af',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+    display: 'block',
+    marginBottom: '0.25rem',
+  },
+  auctionValue: {
+    fontSize: '1rem',
+    fontWeight: 700,
+    color: '#f59e0b',
+  },
+  auctionSubvalue: {
+    fontSize: '1rem',
+    fontWeight: 700,
+    color: '#10b981',
+  },
+  bidForm: {
+    display: 'flex',
+    gap: '0.75rem',
+    flex: 1,
+    maxWidth: '500px',
+    justifyContent: 'flex-end',
+  },
+  bidSelect: {
+    flex: 1.5,
+    fontSize: '0.85rem',
+    background: 'rgba(10, 10, 15, 0.5)',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+  },
+  bidInput: {
+    width: '120px',
+    fontSize: '0.85rem',
+    background: 'rgba(10, 10, 15, 0.5)',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+  },
+  bidBtn: {
+    fontSize: '0.85rem',
+    padding: '0 1rem',
+  },
+  highlightBanner: {
+    background: 'linear-gradient(90deg, rgba(16, 185, 129, 0.15) 0%, rgba(10, 10, 15, 0.8) 100%)',
+    border: '1px solid rgba(16, 185, 129, 0.3)',
+    borderRadius: '8px',
+    padding: '0.75rem 1.25rem',
+    marginBottom: '1.5rem',
+    fontSize: '0.9rem',
+    color: '#10b981',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
 };

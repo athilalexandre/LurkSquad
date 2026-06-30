@@ -12,7 +12,10 @@ import { adminRoutes } from './routes/admin.js';
 import { channelRoutes } from './routes/channels.js';
 import { coinRoutes } from './routes/coins.js';
 import { configRoutes } from './routes/config.js';
+import { auctionRoutes } from './routes/auctions.js';
 import { websocketRoutes } from './ws/handler.js';
+
+let auctionInterval: NodeJS.Timeout | undefined;
 
 const fastify = Fastify({
   logger: {
@@ -58,7 +61,18 @@ async function main() {
     await fastify.register(channelRoutes, { prefix: '/api/channels' });
     await fastify.register(coinRoutes, { prefix: '/api/coins' });
     await fastify.register(configRoutes, { prefix: '/api/config' });
+    await fastify.register(auctionRoutes, { prefix: '/api/auctions' });
     await fastify.register(websocketRoutes); // WS mounts on /ws inside the handler
+
+    // Start Auction Scheduler (every 10 seconds)
+    const { checkAndCloseAuctions } = await import('./services/auctionService.js');
+    auctionInterval = setInterval(async () => {
+      try {
+        await checkAndCloseAuctions();
+      } catch (err) {
+        fastify.log.error(err);
+      }
+    }, 10000);
 
     // Healthcheck
     fastify.get('/health', async () => ({ status: 'ok', time: new Date() }));
@@ -78,6 +92,7 @@ for (const signal of signals) {
   process.on(signal, async () => {
     fastify.log.info(`Recebido sinal ${signal}. Desconectando e encerrando...`);
     try {
+      if (auctionInterval) clearInterval(auctionInterval);
       await prisma.$disconnect();
       await fastify.close();
       fastify.log.info('Servidor encerrado de forma limpa.');

@@ -23,7 +23,7 @@ pub fn get_secure_token() -> Result<String, String> {
 #[tauri::command]
 pub fn delete_secure_token() -> Result<(), String> {
     let entry = Entry::new(SERVICE_NAME, USER_NAME).map_err(|e| e.to_string())?;
-    match entry.delete_password() {
+    match entry.delete_credential() {
         Ok(_) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()), // If it doesn't exist, we're already deleted
         Err(e) => Err(e.to_string()),

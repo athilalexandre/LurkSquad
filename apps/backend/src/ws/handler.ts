@@ -1,19 +1,19 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
-import { SocketStream } from '@fastify/websocket';
+import { WebSocket } from 'ws';
 import { verifyAccessToken } from '../utils/jwt.js';
 import { processHeartbeat, closeAllUserSessions, closeWatchSession } from './heartbeat.js';
 
 // Global map of active websocket connections to broadcast real-time events
-// Map<userId, SocketStream[]>
-export const activeConnections = new Map<string, SocketStream[]>();
+// Map<userId, WebSocket[]>
+export const activeConnections = new Map<string, WebSocket[]>();
 
 export function broadcastToUser(userId: string, data: Record<string, unknown>) {
   const sockets = activeConnections.get(userId);
   if (sockets) {
     const payload = JSON.stringify(data);
     for (const socket of sockets) {
-      if (socket.socket.readyState === socket.socket.OPEN) {
-        socket.socket.send(payload);
+      if (socket.readyState === socket.OPEN) {
+        socket.send(payload);
       }
     }
   }
@@ -23,15 +23,15 @@ export function broadcastToAll(data: Record<string, unknown>) {
   const payload = JSON.stringify(data);
   for (const sockets of activeConnections.values()) {
     for (const socket of sockets) {
-      if (socket.socket.readyState === socket.socket.OPEN) {
-        socket.socket.send(payload);
+      if (socket.readyState === socket.OPEN) {
+        socket.send(payload);
       }
     }
   }
 }
 
 export async function websocketRoutes(fastify: FastifyInstance) {
-  fastify.get('/ws', { websocket: true }, async (connection: SocketStream, request: FastifyRequest) => {
+  fastify.get('/ws', { websocket: true }, async (connection: WebSocket, request: FastifyRequest) => {
     let userId: string | null = null;
     
     try {
@@ -40,8 +40,8 @@ export async function websocketRoutes(fastify: FastifyInstance) {
       const token = url.searchParams.get('token');
 
       if (!token) {
-        connection.socket.send(JSON.stringify({ error: 'Token de autenticação ausente' }));
-        connection.socket.close(4001, 'Unauthorized');
+        connection.send(JSON.stringify({ error: 'Token de autenticação ausente' }));
+        connection.close(4001, 'Unauthorized');
         return;
       }
 
@@ -49,14 +49,14 @@ export async function websocketRoutes(fastify: FastifyInstance) {
       try {
         decoded = verifyAccessToken(token);
       } catch (err) {
-        connection.socket.send(JSON.stringify({ error: 'Token inválido ou expirado' }));
-        connection.socket.close(4001, 'Unauthorized');
+        connection.send(JSON.stringify({ error: 'Token inválido ou expirado' }));
+        connection.close(4001, 'Unauthorized');
         return;
       }
 
       if (decoded.status !== 'APPROVED') {
-        connection.socket.send(JSON.stringify({ error: 'Conta não aprovada' }));
-        connection.socket.close(4003, 'Forbidden');
+        connection.send(JSON.stringify({ error: 'Conta não aprovada' }));
+        connection.close(4003, 'Forbidden');
         return;
       }
 
@@ -70,17 +70,17 @@ export async function websocketRoutes(fastify: FastifyInstance) {
       fastify.log.info(`WebSocket conectado para o usuário: ${userId}`);
 
       // Send initial welcome/ack
-      connection.socket.send(JSON.stringify({ type: 'welcome', status: 'connected' }));
+      connection.send(JSON.stringify({ type: 'welcome', status: 'connected' }));
 
       // 3. Handle messages
-      connection.socket.on('message', async (messageData) => {
+      connection.on('message', async (messageData) => {
         try {
           const payload = JSON.parse(messageData.toString());
 
           if (payload.type === 'heartbeat') {
             const { channelId } = payload;
             if (!channelId) {
-              connection.socket.send(JSON.stringify({ error: 'channelId é obrigatório para heartbeat' }));
+              connection.send(JSON.stringify({ error: 'channelId é obrigatório para heartbeat' }));
               return;
             }
 
@@ -88,7 +88,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
             const result = await processHeartbeat(userId!, channelId);
 
             // Send acknowledgment response
-            connection.socket.send(JSON.stringify({
+            connection.send(JSON.stringify({
               type: 'heartbeat:ack',
               channelId,
               status: result.status,
@@ -99,14 +99,14 @@ export async function websocketRoutes(fastify: FastifyInstance) {
           }
         } catch (error) {
           fastify.log.error(error);
-          connection.socket.send(JSON.stringify({
+          connection.send(JSON.stringify({
             error: error instanceof Error ? error.message : 'Erro ao processar mensagem'
           }));
         }
       });
 
       // 4. Handle close/disconnect
-      connection.socket.on('close', async () => {
+      connection.on('close', async () => {
         if (userId) {
           fastify.log.info(`WebSocket desconectado para o usuário: ${userId}`);
           
@@ -126,7 +126,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
       
     } catch (error) {
       fastify.log.error(error);
-      connection.socket.close(1011, 'Server error');
+      connection.close(1011, 'Server error');
     }
   });
 }

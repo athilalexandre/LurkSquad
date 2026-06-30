@@ -49,11 +49,9 @@ export async function channelRoutes(fastify: FastifyInstance) {
       }
 
       // Fetch Kick channel details to validate slug and get avatar/display name
-      let info;
-      try {
-        info = await fetchKickChannel(normalizedSlug);
-      } catch (err) {
-        return reply.status(400).send({ error: err instanceof Error ? err.message : 'Falha ao verificar canal na Kick' });
+      const info = await fetchKickChannel(normalizedSlug);
+      if (info.notFound) {
+        return reply.status(404).send({ error: `Canal '${slug}' não encontrado na Kick` });
       }
 
       const channel = await prisma.channel.create({

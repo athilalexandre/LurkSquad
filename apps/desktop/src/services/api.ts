@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { getSecureToken, deleteSecureToken } from './token.js';
 
 const BASE_URL = 'http://localhost:3001/api';
 
@@ -69,7 +69,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 // Function to handle JWT refresh token loop using secure OS keyring
 async function tryRefreshTokens(): Promise<boolean> {
   try {
-    const refreshToken = await invoke<string>('get_secure_token');
+    const refreshToken = await getSecureToken();
     if (!refreshToken) {
       return false;
     }
@@ -82,7 +82,7 @@ async function tryRefreshTokens(): Promise<boolean> {
 
     if (!res.ok) {
       // If refresh failed, delete invalid token
-      await invoke('delete_secure_token');
+      await deleteSecureToken();
       memoryAccessToken = null;
       return false;
     }

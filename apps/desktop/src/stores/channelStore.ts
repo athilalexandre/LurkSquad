@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { apiFetch } from '../services/api.js';
+import { fetchLocalKickChannelInfo } from '../services/token.js';
 
 export interface Channel {
   id: string;
@@ -34,6 +35,29 @@ export const useChannelStore = create<ChannelState>((set) => ({
     try {
       const data = await apiFetch<{ channels: Channel[] }>('/channels');
       set({ channels: data.channels, isLoading: false });
+
+      // Fetch actual live information asynchronously for each channel
+      data.channels.forEach(async (channel) => {
+        if (channel.isActive) {
+          try {
+            const localInfo = await fetchLocalKickChannelInfo(channel.slug);
+            set((state) => ({
+              channels: state.channels.map((c) =>
+                c.id === channel.id
+                  ? {
+                      ...c,
+                      isLive: localInfo.isLive,
+                      viewers: localInfo.viewers,
+                      status: localInfo.isLive ? 'live' : 'offline',
+                    }
+                  : c
+              ),
+            }));
+          } catch (err) {
+            console.error(`Erro ao atualizar dados locais do canal ${channel.slug}:`, err);
+          }
+        }
+      });
     } catch (err: any) {
       set({ error: err.message || 'Erro ao carregar canais', isLoading: false });
     }
