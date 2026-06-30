@@ -1,0 +1,34 @@
+# Node.js
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Database / SQLite
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Environment Variables
+.env
+.env.local
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Tauri Build Outputs
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
