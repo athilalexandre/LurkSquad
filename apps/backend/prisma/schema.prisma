@@ -27,6 +27,7 @@ enum UserStatus {
   APPROVED
   REJECTED
   BANNED
+  SUSPENDED
 }
 
 enum CoinTransactionType {
@@ -60,6 +61,15 @@ model User {
   totpSecret  String?
   totpEnabled Boolean @default(false)
 
+  // LurkSquad v4 Fields
+  kickSlug         String?     @unique
+  channelId        String?     @unique
+  channel          Channel?    @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  flagColor        String      @default("green")
+  infractionCount  Int         @default(0)
+  suspendedUntil   DateTime?
+  lastActiveAt     DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -71,6 +81,8 @@ model User {
   auctionBids      AuctionBid[]
   auditLogsActor   AuditLog[]        @relation("AuditActor")
   auditLogsTarget  AuditLog[]        @relation("AuditTarget")
+  flags            UserFlag[]
+  purchases        CoinPurchase[]
 
   @@index([email])
   @@index([status])
@@ -105,12 +117,19 @@ model Channel {
   isActive    Boolean @default(true)
   addedBy     String?
 
+  // LurkSquad v4 Fields
+  thumbnailUrl  String?
+  viewerCount   Int       @default(0)
+  isLive        Boolean   @default(false)
+  lastCheckedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   watchSessions WatchSession[]
   auctionSlots  AuctionSlot[]
   auctionBids   AuctionBid[]
+  owner         User?
 
   @@index([slug])
 }
@@ -193,6 +212,12 @@ model Auction {
   bids  AuctionBid[]
   slots AuctionSlot[]
 
+  // LurkSquad v4 Fields
+  isAutomatic Boolean   @default(true)
+  revealAt    DateTime  @default(now())
+  bidsHidden  Boolean   @default(true)
+  slotsCount  Int       @default(5)
+
   @@index([status, endsAt])
 }
 
@@ -265,4 +290,91 @@ model AppConfig {
   maxChannels      Int @default(100)
 
   updatedAt DateTime @updatedAt
+
+  // LurkSquad v4 Fields - Leilão
+  auctionDurationMinutes    Int @default(50)
+  auctionRevealMinutes      Int @default(10)
+  auctionSlotsCount         Int @default(5)
+  auctionMinBid             Int @default(30)
+  auctionBidIncrement       Int @default(10)
+  auctionAntiSnipeMinutes   Int @default(2)
+  auctionAntiSnipeMaxExt    Int @default(3)
+
+  // LurkSquad v4 Fields - Inatividade
+  inactivityThresholdHours  Int @default(24)
+
+  // LurkSquad v4 Fields - Loja
+  maxPurchasesPerDay        Int @default(2)
+  purchaseCooldownMinutes   Int @default(60)
+  vipPriceCents             Int @default(2500) // R$ 25,00
+  vipDurationDays           Int @default(30)
+
+  // LurkSquad v4 Fields - Kick API
+  kickClientId            String?
+  kickClientSecret        String?
+  channelCheckIntervalSec Int @default(300) // 5 min
+}
+
+model UserFlag {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  level          Int       // 1=amarela, 2=laranja, 3=vermelha
+  color          String    // "yellow" | "orange" | "red"
+  reason         String    // "Inatividade +24h" ou motivo manual
+  suspendedUntil DateTime?
+  issuedBy       String    // "SYSTEM" ou admin userId
+  isActive       Boolean   @default(true)
+  removedBy      String?
+  removedAt      DateTime?
+
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, isActive])
+}
+
+model CoinPackage {
+  id         String   @id @default(cuid())
+  name       String   // "Starter", "Boost", etc.
+  coins      Int      // 200, 500, 1200, 3000
+  priceCents Int      // 490, 990, 1990, 3990
+  isActive   Boolean  @default(true)
+  sortOrder  Int      // 0
+  purchases  CoinPurchase[]
+  createdAt  DateTime @default(now())
+}
+
+model CoinPurchase {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  packageId   String?
+  package     CoinPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+
+  type        String   // "COINS" | "VIP"
+  coins       Int      // moedas do pacote (0 se VIP)
+  priceCents  Int      // valor pago em centavos
+
+  status      String   @default("PENDING") // "PENDING" | "CONFIRMED" | "REJECTED"
+  proofUrl    String?  // URL do comprovante (opcional)
+
+  confirmedBy String?  // admin que confirmou
+  confirmedAt DateTime?
+  rejectedBy  String?  // admin que rejeitou
+  rejectedAt  DateTime?
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
+model PixConfig {
+  id         String   @id @default("global")
+  keyType    String   // "cpf" | "cnpj" | "email" | "phone" | "random"
+  keyValue   String   // a chave PIX em si
+  holderName String   // nome do titular
+
+  updatedAt  DateTime @updatedAt
 }
