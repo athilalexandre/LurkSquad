@@ -4,12 +4,14 @@ import { prisma } from '../services/db.js';
 import { hashPassword, verifyPassword } from '../utils/hash.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/jwt.js';
 import { authenticate } from '../middleware/auth.js';
+import { fetchKickChannel } from '../services/kickService.js';
 
 const registerSchema = z.object({
   email: z.string().email('Email inválido'),
   username: z.string().min(3, 'Nome de usuário deve ter no mínimo 3 caracteres').max(20).regex(/^[a-zA-Z0-9_-]+$/, 'Nome de usuário inválido'),
   displayName: z.string().min(2, 'Nome deve ter no mínimo 2 caracteres').max(50),
   password: z.string().min(6, 'Senha deve ter no mínimo 6 caracteres'),
+  kickSlug: z.string().min(1, 'Canal Kick é obrigatório'),
 });
 
 const loginSchema = z.object({
@@ -26,17 +28,19 @@ export async function authRoutes(fastify: FastifyInstance) {
   // 1. Register
   fastify.post('/register', async (request, reply) => {
     try {
-      const { email, username, displayName, password } = registerSchema.parse(request.body);
+      const { email, username, displayName, password, kickSlug } = registerSchema.parse(request.body);
 
       const normalizedEmail = email.toLowerCase().trim();
       const normalizedUsername = username.toLowerCase().trim();
+      const normalizedKickSlug = kickSlug.toLowerCase().trim();
 
       // Check if user already exists
       const existingUser = await prisma.user.findFirst({
         where: {
           OR: [
             { email: normalizedEmail },
-            { username: normalizedUsername }
+            { username: normalizedUsername },
+            { kickSlug: normalizedKickSlug }
           ]
         }
       });
@@ -45,7 +49,16 @@ export async function authRoutes(fastify: FastifyInstance) {
         if (existingUser.email === normalizedEmail) {
           return reply.status(400).send({ error: 'Este e-mail já está cadastrado' });
         }
-        return reply.status(400).send({ error: 'Este nome de usuário já está em uso' });
+        if (existingUser.username === normalizedUsername) {
+          return reply.status(400).send({ error: 'Este nome de usuário já está em uso' });
+        }
+        return reply.status(400).send({ error: 'Este canal Kick já está vinculado a outra conta' });
+      }
+
+      // Fetch Kick channel details to validate slug and get avatar/display name
+      const info = await fetchKickChannel(normalizedKickSlug);
+      if (info.notFound) {
+        return reply.status(400).send({ error: `Canal Kick '${kickSlug}' não foi encontrado` });
       }
 
       const passwordHash = await hashPassword(password);
@@ -55,6 +68,22 @@ export async function authRoutes(fastify: FastifyInstance) {
       const role = usersCount === 0 ? 'OWNER' : 'USER';
       const status = usersCount === 0 ? 'APPROVED' : 'PENDING';
 
+      // Upsert the channel in DB
+      const channel = await prisma.channel.upsert({
+        where: { slug: normalizedKickSlug },
+        update: {
+          isActive: true,
+          displayName: info.displayName,
+          avatarUrl: info.avatarUrl,
+        },
+        create: {
+          slug: normalizedKickSlug,
+          displayName: info.displayName,
+          avatarUrl: info.avatarUrl,
+          isActive: true,
+        }
+      });
+
       const user = await prisma.user.create({
         data: {
           email: normalizedEmail,
@@ -63,6 +92,8 @@ export async function authRoutes(fastify: FastifyInstance) {
           passwordHash,
           role,
           status,
+          kickSlug: normalizedKickSlug,
+          channelId: channel.id,
           coinBalance: {
             create: {
               balance: 0,
@@ -172,7 +203,13 @@ export async function authRoutes(fastify: FastifyInstance) {
           username: user.username,
           displayName: user.displayName,
           role: user.role,
-          status: user.status
+          status: user.status,
+          plan: user.plan,
+          kickSlug: user.kickSlug,
+          channelId: user.channelId,
+          flagColor: user.flagColor,
+          infractionCount: user.infractionCount,
+          suspendedUntil: user.suspendedUntil,
         }
       });
     } catch (error) {
@@ -262,6 +299,12 @@ export async function authRoutes(fastify: FastifyInstance) {
         displayName: true,
         role: true,
         status: true,
+        plan: true,
+        kickSlug: true,
+        channelId: true,
+        flagColor: true,
+        infractionCount: true,
+        suspendedUntil: true,
         createdAt: true,
         coinBalance: {
           select: {

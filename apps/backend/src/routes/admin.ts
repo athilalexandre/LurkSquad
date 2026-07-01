@@ -370,4 +370,443 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Erro ao criar leilão' });
     }
   });
+
+  // 11. Get all shop purchases
+  fastify.get('/shop/purchases', async (request, reply) => {
+    const purchases = await prisma.coinPurchase.findMany({
+      include: {
+        user: {
+          select: {
+            username: true,
+            displayName: true,
+          }
+        },
+        package: true,
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    return reply.send({ purchases });
+  });
+
+  // 12. Confirm purchase
+  fastify.post('/shop/purchases/:id/confirm', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actorId = request.user!.userId;
+
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const purchase = await tx.coinPurchase.findUnique({
+          where: { id },
+          include: { user: true }
+        });
+
+        if (!purchase) throw new Error('Pedido de compra não encontrado');
+        if (purchase.status !== 'PENDING') throw new Error('Este pedido já foi processado');
+
+        // Confirm purchase
+        const updatedPurchase = await tx.coinPurchase.update({
+          where: { id },
+          data: {
+            status: 'CONFIRMED',
+            confirmedBy: actorId,
+            confirmedAt: new Date(),
+          }
+        });
+
+        if (purchase.type === 'VIP') {
+          // Grant VIP plan
+          await tx.user.update({
+            where: { id: purchase.userId },
+            data: { plan: 'VIP' }
+          });
+        } else {
+          // Grant Coins
+          const balance = await tx.coinBalance.upsert({
+            where: { userId: purchase.userId },
+            update: {
+              balance: { increment: purchase.coins }
+            },
+            create: {
+              userId: purchase.userId,
+              balance: purchase.coins,
+              reserved: 0,
+            }
+          });
+
+          // Create ledger entry
+          await tx.coinTransaction.create({
+            data: {
+              userId: purchase.userId,
+              type: 'ADMIN_ADJUST',
+              amount: purchase.coins,
+              balanceAfter: balance.balance,
+              reason: `Compra de moedas confirmada: ID ${purchase.id}`,
+            }
+          });
+        }
+
+        return updatedPurchase;
+      });
+
+      // Broadcast update
+      const { broadcastToAll } = await import('../ws/handler.js');
+      broadcastToAll({
+        type: 'shop:purchase_confirmed',
+        purchaseId: id,
+        userId: result.userId,
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'shop.confirm_purchase',
+        targetId: result.userId,
+        details: { purchaseId: id, type: result.type, amount: result.coins },
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, purchase: result });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao confirmar compra' });
+    }
+  });
+
+  // 13. Reject purchase
+  fastify.post('/shop/purchases/:id/reject', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actorId = request.user!.userId;
+
+    try {
+      const purchase = await prisma.coinPurchase.findUnique({ where: { id } });
+      if (!purchase) {
+        return reply.status(404).send({ error: 'Pedido de compra não encontrado' });
+      }
+      if (purchase.status !== 'PENDING') {
+        return reply.status(400).send({ error: 'Este pedido já foi processado' });
+      }
+
+      const updated = await prisma.coinPurchase.update({
+        where: { id },
+        data: {
+          status: 'REJECTED',
+          rejectedBy: actorId,
+          rejectedAt: new Date(),
+        }
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'shop.reject_purchase',
+        targetId: purchase.userId,
+        details: { purchaseId: id },
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, purchase: updated });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao rejeitar compra' });
+    }
+  });
+
+  // 14. Update PIX configuration
+  fastify.put('/shop/pix', async (request, reply) => {
+    const actorId = request.user!.userId;
+    const updatePixSchema = z.object({
+      keyType: z.string().min(1),
+      keyValue: z.string().min(1),
+      holderName: z.string().min(1),
+    });
+
+    try {
+      const { keyType, keyValue, holderName } = updatePixSchema.parse(request.body);
+
+      const pix = await prisma.pixConfig.upsert({
+        where: { id: 'global' },
+        update: { keyType, keyValue, holderName },
+        create: { id: 'global', keyType, keyValue, holderName }
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'shop.update_pix',
+        details: { keyType, keyValue, holderName },
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, pix });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao atualizar PIX' });
+    }
+  });
+
+  // 15. List all packages (including inactive)
+  fastify.get('/shop/packages', async (request, reply) => {
+    const packages = await prisma.coinPackage.findMany({
+      orderBy: { sortOrder: 'asc' }
+    });
+    return reply.send({ packages });
+  });
+
+  // 16. Create package
+  fastify.post('/shop/packages', async (request, reply) => {
+    const actorId = request.user!.userId;
+    const packageSchema = z.object({
+      name: z.string().min(1),
+      coins: z.number().int().min(1),
+      priceCents: z.number().int().min(1),
+      isActive: z.boolean().default(true),
+      sortOrder: z.number().int().default(0),
+    });
+
+    try {
+      const data = packageSchema.parse(request.body);
+      const pkg = await prisma.coinPackage.create({ data });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'shop.create_package',
+        details: { packageId: pkg.id, name: pkg.name },
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, package: pkg });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao criar pacote' });
+    }
+  });
+
+  // 17. Update package
+  fastify.put('/shop/packages/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actorId = request.user!.userId;
+    const packageSchema = z.object({
+      name: z.string().min(1),
+      coins: z.number().int().min(1),
+      priceCents: z.number().int().min(1),
+      isActive: z.boolean(),
+      sortOrder: z.number().int(),
+    });
+
+    try {
+      const data = packageSchema.parse(request.body);
+      const pkg = await prisma.coinPackage.update({
+        where: { id },
+        data
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'shop.update_package',
+        targetId: id,
+        details: { name: pkg.name },
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, package: pkg });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao atualizar pacote' });
+    }
+  });
+
+  // 18. Delete package
+  fastify.delete('/shop/packages/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actorId = request.user!.userId;
+
+    try {
+      await prisma.coinPackage.delete({ where: { id } });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'shop.delete_package',
+        targetId: id,
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao deletar pacote' });
+    }
+  });
+
+  // 19. Add manual infraction flag to user
+  fastify.post('/users/:id/flag', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actorId = request.user!.userId;
+    
+    const addFlagSchema = z.object({
+      color: z.enum(['yellow', 'orange', 'red']),
+      reason: z.string().min(3),
+    });
+
+    try {
+      const { color, reason } = addFlagSchema.parse(request.body);
+
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) {
+        return reply.status(404).send({ error: 'Usuário não encontrado' });
+      }
+
+      const nextInfraction = user.infractionCount + 1;
+      
+      if (nextInfraction >= 4) {
+        // Delete user
+        await prisma.user.delete({ where: { id } });
+        
+        const { broadcastToAll } = await import('../ws/handler.js');
+        broadcastToAll({ type: 'user:deleted', userId: id });
+
+        await createAuditLog(prisma, {
+          actorId,
+          action: 'user.delete_manual_warning',
+          targetId: id,
+          details: { username: user.username, reason },
+          ipAddress: request.ip
+        });
+
+        return reply.send({ success: true, message: 'Usuário atingiu o limite de infrações e foi deletado.' });
+      }
+
+      let durationHours = 24;
+      if (color === 'orange') durationHours = 48;
+      if (color === 'red') durationHours = 72;
+
+      const suspendedUntil = new Date();
+      suspendedUntil.setHours(suspendedUntil.getHours() + durationHours);
+
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = await tx.user.update({
+          where: { id },
+          data: {
+            status: 'SUSPENDED',
+            flagColor: color,
+            infractionCount: nextInfraction,
+            suspendedUntil,
+          }
+        });
+
+        await tx.userFlag.create({
+          data: {
+            userId: id,
+            level: nextInfraction,
+            color,
+            reason,
+            suspendedUntil,
+            issuedBy: actorId,
+          }
+        });
+
+        // Revoke active sessions
+        await tx.session.updateMany({
+          where: { userId: id, revokedAt: null },
+          data: { revokedAt: new Date() }
+        });
+
+        return updated;
+      });
+
+      const { broadcastToAll } = await import('../ws/handler.js');
+      broadcastToAll({
+        type: 'user:suspended',
+        userId: id,
+        displayName: user.displayName,
+        flagColor: color,
+        suspendedUntil,
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'user.add_flag',
+        targetId: id,
+        details: { color, reason, infractionCount: nextInfraction },
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, user: result });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao aplicar flag' });
+    }
+  });
+
+  // 20. Clear flags / Restore user (unflag)
+  fastify.post('/users/:id/unflag', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actorId = request.user!.userId;
+
+    try {
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) {
+        return reply.status(404).send({ error: 'Usuário não encontrado' });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = await tx.user.update({
+          where: { id },
+          data: {
+            status: user.status === 'SUSPENDED' ? 'APPROVED' : user.status,
+            flagColor: 'green',
+            infractionCount: 0,
+            suspendedUntil: null,
+            lastActiveAt: new Date(),
+          }
+        });
+
+        await tx.userFlag.updateMany({
+          where: { userId: id, isActive: true },
+          data: { isActive: false, removedBy: actorId, removedAt: new Date() }
+        });
+
+        return updated;
+      });
+
+      const { broadcastToAll } = await import('../ws/handler.js');
+      broadcastToAll({
+        type: 'user:restored',
+        userId: id,
+        displayName: user.displayName,
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'user.clear_flags',
+        targetId: id,
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, user: result });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao limpar flags' });
+    }
+  });
+
+  // 21. Update global config parameters
+  fastify.put('/config', async (request, reply) => {
+    const actorId = request.user!.userId;
+    const configSchema = z.object({
+      coinsPerMinute: z.number().min(0).optional(),
+      vipMultiplier: z.number().min(1).optional(),
+      inactivityThresholdHours: z.number().int().min(1).optional(),
+      vipPriceCents: z.number().int().min(1).optional(),
+      maxDailyCoins: z.number().int().min(1).optional(),
+      channelCheckIntervalSec: z.number().int().min(10).optional(),
+    });
+
+    try {
+      const data = configSchema.parse(request.body);
+      const updated = await prisma.appConfig.update({
+        where: { id: 'global' },
+        data
+      });
+
+      await createAuditLog(prisma, {
+        actorId,
+        action: 'config.update',
+        details: data,
+        ipAddress: request.ip
+      });
+
+      return reply.send({ success: true, config: updated });
+    } catch (error: any) {
+      return reply.status(400).send({ error: error.message || 'Erro ao atualizar configurações' });
+    }
+  });
 }
