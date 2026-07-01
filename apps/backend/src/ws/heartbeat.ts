@@ -43,6 +43,12 @@ export async function processHeartbeat(
     throw new Error('Usuário não autorizado ou não aprovated');
   }
 
+  // Update lastActiveAt to keep them marked active
+  await prisma.user.update({
+    where: { id: userId },
+    data: { lastActiveAt: new Date() }
+  });
+
   // Calculate coins per minute with VIP multiplier
   const multiplier = user.plan === 'VIP' ? config.vipMultiplier : 1.0;
   const coinsPerMinute = Math.floor(config.coinsPerMinute * multiplier);

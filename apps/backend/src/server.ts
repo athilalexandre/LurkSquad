@@ -67,21 +67,37 @@ async function main() {
     // Start Schedulers
     const { checkAndCloseAuctions } = await import('./services/auctionService.js');
     const { runBackgroundChannelSync } = await import('./services/kickService.js');
+    const { checkUserInactivity, checkSuspensionExpiration, checkVipExpirations } = await import('./services/warningService.js');
 
     let lastChannelSync = 0;
+    let lastInactivityCheck = 0;
+    let lastSuspensionCheck = 0;
 
     auctionInterval = setInterval(async () => {
       try {
         await checkAndCloseAuctions();
 
-        // Background channel sync check
         const now = Date.now();
         const configGlobal = await prisma.appConfig.findUnique({ where: { id: 'global' } });
-        const intervalMs = (configGlobal?.channelCheckIntervalSec ?? 300) * 1000;
 
-        if (now - lastChannelSync >= intervalMs) {
+        // 1. Background channel sync check (every 5 min)
+        const channelIntervalMs = (configGlobal?.channelCheckIntervalSec ?? 300) * 1000;
+        if (now - lastChannelSync >= channelIntervalMs) {
           lastChannelSync = now;
           runBackgroundChannelSync().catch(err => fastify.log.error(err));
+        }
+
+        // 2. Suspension expiration check (every 5 min)
+        if (now - lastSuspensionCheck >= 300000) { // 5 minutes
+          lastSuspensionCheck = now;
+          checkSuspensionExpiration().catch(err => fastify.log.error(err));
+        }
+
+        // 3. User inactivity & VIP expiration check (every 1 hour)
+        if (now - lastInactivityCheck >= 3600000) { // 1 hour
+          lastInactivityCheck = now;
+          checkUserInactivity().catch(err => fastify.log.error(err));
+          checkVipExpirations().catch(err => fastify.log.error(err));
         }
       } catch (err) {
         fastify.log.error(err);
