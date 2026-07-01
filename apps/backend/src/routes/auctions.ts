@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireApproved } from '../middleware/auth.js';
-import { getActiveAuction, getActiveHighlightSlot, placeBid } from '../services/auctionService.js';
+import { getActiveAuction, getActiveHighlightSlots, placeBid } from '../services/auctionService.js';
 import { broadcastToAll } from '../ws/handler.js';
 
 const placeBidSchema = z.object({
@@ -14,12 +14,19 @@ export async function auctionRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', authenticate);
   fastify.addHook('preHandler', requireApproved);
 
-  // 1. Get active auction and current highlight slot
+  // 1. Get active auction and current highlight slots
   fastify.get('/active', async (request, reply) => {
     try {
       const auction = await getActiveAuction();
-      const highlight = await getActiveHighlightSlot();
-      return reply.send({ auction, highlight });
+      const highlights = await getActiveHighlightSlots();
+      
+      // Sanitize bids if they are hidden and user is not an admin/owner
+      if (auction && auction.bidsHidden && request.user?.role !== 'ADMIN' && request.user?.role !== 'OWNER') {
+        // Keep only the user's own bid in the response so they can see if they placed a bid
+        auction.bids = auction.bids.filter(b => b.userId === request.user?.userId);
+      }
+      
+      return reply.send({ auction, highlights });
     } catch (error) {
       fastify.log.error(error);
       return reply.status(500).send({ error: 'Erro ao buscar leilão ativo' });
@@ -38,11 +45,25 @@ export async function auctionRoutes(fastify: FastifyInstance) {
       // Fetch updated auction info to broadcast
       const updatedAuction = await getActiveAuction();
 
-      // Notify all connected clients of the new bid in real time
-      broadcastToAll({
-        type: 'auction:bid',
-        auction: updatedAuction,
-      });
+      if (updatedAuction) {
+        if (updatedAuction.bidsHidden) {
+          // If bids are hidden, we broadcast a sanitized version of the auction
+          // so other clients know a bid occurred but cannot see the bids array details
+          broadcastToAll({
+            type: 'auction:bid_placed',
+            auction: {
+              ...updatedAuction,
+              bids: [], // clear bids in broadcast to prevent inspecting network packets
+            },
+          });
+        } else {
+          // If revealed, broadcast the full auction details
+          broadcastToAll({
+            type: 'auction:bid',
+            auction: updatedAuction,
+          });
+        }
+      }
 
       return reply.send({
         success: true,
