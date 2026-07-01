@@ -27,6 +27,7 @@ export interface Auction {
   startsAt: string;
   endsAt: string;
   highlightDuration: number;
+  bidsHidden: boolean; // LurkSquad v4 cego
   bids: AuctionBid[];
 }
 
@@ -40,12 +41,14 @@ export interface AuctionSlot {
     slug: string;
     displayName: string;
     avatarUrl: string | null;
+    isLive?: boolean;
   };
 }
 
 interface AuctionState {
   activeAuction: Auction | null;
   activeHighlight: AuctionSlot | null;
+  activeHighlights: AuctionSlot[];
   isLoading: boolean;
   error: string | null;
 
@@ -60,21 +63,25 @@ interface AuctionState {
   }) => Promise<void>;
   setActiveAuction: (auction: Auction | null) => void;
   setActiveHighlight: (highlight: AuctionSlot | null) => void;
+  setActiveHighlights: (highlights: AuctionSlot[]) => void;
 }
 
 export const useAuctionStore = create<AuctionState>((set, get) => ({
   activeAuction: null,
   activeHighlight: null,
+  activeHighlights: [],
   isLoading: false,
   error: null,
 
   fetchActiveAuction: async () => {
     set({ isLoading: true, error: null });
     try {
-      const data = await apiFetch<{ auction: Auction | null; highlight: AuctionSlot | null }>('/auctions/active');
+      const data = await apiFetch<{ auction: Auction | null; highlights: AuctionSlot[] | null }>('/auctions/active');
+      const highlights = data.highlights || [];
       set({
         activeAuction: data.auction,
-        activeHighlight: data.highlight,
+        activeHighlights: highlights,
+        activeHighlight: highlights[0] || null,
         isLoading: false
       });
     } catch (err: any) {
@@ -112,4 +119,5 @@ export const useAuctionStore = create<AuctionState>((set, get) => ({
 
   setActiveAuction: (auction) => set({ activeAuction: auction }),
   setActiveHighlight: (highlight) => set({ activeHighlight: highlight }),
+  setActiveHighlights: (highlights) => set({ activeHighlights: highlights, activeHighlight: highlights[0] || null }),
 }));

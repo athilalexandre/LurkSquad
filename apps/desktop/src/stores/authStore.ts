@@ -8,7 +8,13 @@ export interface User {
   username: string;
   displayName: string;
   role: 'USER' | 'MODERATOR' | 'ADMIN' | 'OWNER';
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'BANNED';
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'BANNED' | 'SUSPENDED';
+  plan?: 'STANDARD' | 'VIP';
+  kickSlug?: string;
+  channelId?: string;
+  flagColor?: 'green' | 'yellow' | 'orange' | 'red';
+  infractionCount?: number;
+  suspendedUntil?: string | null;
 }
 
 interface AuthState {
@@ -19,7 +25,7 @@ interface AuthState {
   
   initialize: () => Promise<void>;
   login: (usernameOrEmail: string, password: string) => Promise<void>;
-  register: (email: string, username: string, displayName: string, password: string) => Promise<string>;
+  register: (email: string, username: string, displayName: string, password: string, kickSlug: string) => Promise<string>;
   logout: () => Promise<void>;
   clearError: () => void;
 }
@@ -95,12 +101,12 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  register: async (email, username, displayName, password) => {
+  register: async (email, username, displayName, password, kickSlug) => {
     set({ error: null });
     try {
       const data = await apiFetch<{ message: string; user: User }>('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ email, username, displayName, password }),
+        body: JSON.stringify({ email, username, displayName, password, kickSlug }),
         skipAuth: true,
       });
 

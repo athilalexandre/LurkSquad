@@ -1,6 +1,34 @@
 import { useAuthStore } from '../stores/authStore.js';
 import { ShieldAlert, RefreshCw, LogOut } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+
+function SuspensionCountdown({ suspendedUntil }: { suspendedUntil: string }) {
+  const [timeLeft, setTimeLeft] = useState('');
+
+  useEffect(() => {
+    const calculateTime = () => {
+      const diff = new Date(suspendedUntil).getTime() - Date.now();
+      if (diff <= 0) {
+        setTimeLeft('Sua suspensão terminou! Clique em "Atualizar Status".');
+        return;
+      }
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+      setTimeLeft(`Faltam ${hours}h ${minutes}m ${seconds}s para liberar sua conta.`);
+    };
+
+    calculateTime();
+    const interval = setInterval(calculateTime, 1000);
+    return () => clearInterval(interval);
+  }, [suspendedUntil]);
+
+  return (
+    <div style={{ color: '#ef4444', fontWeight: 'bold', fontSize: '0.9rem', marginTop: '1rem', padding: '0.5rem', backgroundColor: 'rgba(239, 68, 68, 0.05)', borderRadius: '6px', border: '1px solid rgba(239, 68, 68, 0.15)' }}>
+      {timeLeft}
+    </div>
+  );
+}
 
 export function PendingPage() {
   const user = useAuthStore((state) => state.user);
@@ -30,6 +58,13 @@ export function PendingPage() {
           color: '#ef4444',
           bg: 'rgba(239, 68, 68, 0.1)',
         };
+      case 'SUSPENDED':
+        return {
+          title: 'Conta Suspensa',
+          description: `Sua conta foi suspensa temporariamente devido a inatividade (mais de 24h sem entrar no aplicativo). Cor da sua flag atual: ${user?.flagColor?.toUpperCase()}`,
+          color: user?.flagColor === 'red' ? '#ef4444' : user?.flagColor === 'orange' ? '#f97316' : '#f59e0b',
+          bg: user?.flagColor === 'red' ? 'rgba(239, 68, 68, 0.1)' : user?.flagColor === 'orange' ? 'rgba(249, 115, 22, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+        };
       default:
         return {
           title: 'Aguardando Aprovação',
@@ -51,6 +86,9 @@ export function PendingPage() {
           </div>
           <h2 style={styles.title}>{config.title}</h2>
           <p style={styles.desc}>{config.description}</p>
+          {user?.status === 'SUSPENDED' && user.suspendedUntil && (
+            <SuspensionCountdown suspendedUntil={user.suspendedUntil} />
+          )}
         </div>
 
         <div style={styles.userCard}>

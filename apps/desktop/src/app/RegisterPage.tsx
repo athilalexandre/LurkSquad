@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuthStore } from '../stores/authStore.js';
-import { UserPlus, Mail, User, Type, Key, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { UserPlus, Mail, User, Type, Key, ShieldCheck, ShieldAlert, Radio } from 'lucide-react';
 
 interface RegisterPageProps {
   onNavigateToLogin: () => void;
@@ -11,6 +11,7 @@ export function RegisterPage({ onNavigateToLogin }: RegisterPageProps) {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
+  const [kickSlug, setKickSlug] = useState('');
   const [loading, setLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
@@ -20,11 +21,11 @@ export function RegisterPage({ onNavigateToLogin }: RegisterPageProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !username || !displayName || !password) return;
+    if (!email || !username || !displayName || !password || !kickSlug) return;
 
     setLoading(true);
     try {
-      const msg = await register(email, username, displayName, password);
+      const msg = await register(email, username, displayName, password, kickSlug);
       setSuccessMessage(msg);
     } catch (err) {
       // Error handled by store
@@ -111,7 +112,7 @@ export function RegisterPage({ onNavigateToLogin }: RegisterPageProps) {
                 className="input-field"
                 style={styles.input}
                 type="text"
-                placeholder="Ex: athila_lurk (letras/números)"
+                placeholder="Ex: athila_lurk"
                 value={username}
                 onChange={(e) => {
                   clearError();
@@ -147,8 +148,31 @@ export function RegisterPage({ onNavigateToLogin }: RegisterPageProps) {
           </div>
 
           <div className="form-group">
+            <label className="form-label" htmlFor="kickSlug">
+              Slug do seu Canal Kick
+            </label>
+            <div style={styles.inputWrapper}>
+              <Radio size={16} style={styles.inputIcon} />
+              <input
+                id="kickSlug"
+                className="input-field"
+                style={styles.input}
+                type="text"
+                placeholder="Ex: leokaos (apenas o username)"
+                value={kickSlug}
+                onChange={(e) => {
+                  clearError();
+                  setKickSlug(e.target.value);
+                }}
+                disabled={loading}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
             <label className="form-label" htmlFor="password">
-              Senha (mínimo 6 digitos)
+              Senha (mínimo 6 dígitos)
             </label>
             <div style={styles.inputWrapper}>
               <Key size={16} style={styles.inputIcon} />
@@ -173,21 +197,16 @@ export function RegisterPage({ onNavigateToLogin }: RegisterPageProps) {
             type="submit"
             className="btn btn-primary"
             style={styles.submitBtn}
-            disabled={loading || !email || !username || !displayName || !password}
+            disabled={loading || !email || !username || !displayName || !password || !kickSlug}
           >
             {loading ? 'Processando cadastro...' : 'Enviar para Aprovação'}
           </button>
         </form>
 
         <div style={styles.footer}>
-          <span>Já tem cadastro? </span>
-          <button
-            type="button"
-            onClick={onNavigateToLogin}
-            style={styles.linkBtn}
-            disabled={loading}
-          >
-            Fazer login
+          <span style={styles.footerText}>Já tem uma conta?</span>
+          <button type="button" style={styles.loginLink} onClick={onNavigateToLogin}>
+            Fazer Login
           </button>
         </div>
       </div>
@@ -200,39 +219,41 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    height: '100vh',
+    minHeight: '100vh',
     width: '100vw',
-    padding: '1rem',
+    backgroundColor: '#0a0a0f',
+    padding: '2rem 1rem',
   },
   card: {
     width: '100%',
-    maxWidth: '440px',
+    maxWidth: '420px',
     padding: '2.5rem 2rem',
   },
   header: {
     textAlign: 'center' as const,
-    marginBottom: '1.75rem',
+    marginBottom: '2rem',
   },
   logoBadge: {
     display: 'inline-flex',
     padding: '0.75rem',
     borderRadius: '12px',
     backgroundColor: 'rgba(139, 92, 246, 0.1)',
-    marginBottom: '1rem',
     border: '1px solid rgba(139, 92, 246, 0.2)',
+    marginBottom: '1rem',
   },
   successBadge: {
     display: 'inline-flex',
     padding: '0.75rem',
     borderRadius: '12px',
     backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    marginBottom: '1rem',
     border: '1px solid rgba(16, 185, 129, 0.2)',
+    marginBottom: '1rem',
   },
   title: {
     fontSize: '1.5rem',
-    fontWeight: 700,
-    marginBottom: '0.25rem',
+    fontWeight: 800,
+    letterSpacing: '-0.02em',
+    marginBottom: '0.35rem',
   },
   subtitle: {
     fontSize: '0.85rem',
@@ -240,9 +261,21 @@ const styles = {
   },
   successText: {
     fontSize: '0.9rem',
-    color: '#9ca3af',
-    marginTop: '0.75rem',
-    lineHeight: '1.4',
+    color: '#d1d5db',
+    lineHeight: '1.6',
+    marginTop: '0.5rem',
+  },
+  errorBox: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    border: '1px solid rgba(239, 68, 68, 0.2)',
+    borderRadius: '8px',
+    padding: '0.75rem 1rem',
+    marginBottom: '1.5rem',
+    fontSize: '0.85rem',
+    color: '#f87171',
   },
   inputWrapper: {
     position: 'relative' as const,
@@ -253,37 +286,31 @@ const styles = {
     position: 'absolute' as const,
     left: '12px',
     color: '#6b7280',
+    pointerEvents: 'none' as const,
   },
   input: {
-    width: '100%',
-    paddingLeft: '36px',
+    paddingLeft: '38px',
   },
   submitBtn: {
     width: '100%',
-    marginTop: '0.75rem',
-  },
-  errorBox: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    padding: '0.75rem 1rem',
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    border: '1px solid rgba(239, 68, 68, 0.2)',
-    borderRadius: '8px',
-    fontSize: '0.8rem',
-    color: '#ef4444',
-    marginBottom: '1.5rem',
+    marginTop: '1.5rem',
+    justifyContent: 'center',
   },
   footer: {
-    marginTop: '1.5rem',
-    textAlign: 'center' as const,
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginTop: '2rem',
     fontSize: '0.85rem',
+  },
+  footerText: {
     color: '#9ca3af',
   },
-  linkBtn: {
+  loginLink: {
     background: 'none',
     border: 'none',
-    color: '#8b5cf6',
+    color: '#a78bfa',
     fontWeight: 600,
     cursor: 'pointer',
     padding: 0,

@@ -1,10 +1,26 @@
-import { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useAuthStore } from '../stores/authStore.js';
 import { useChannelStore } from '../stores/channelStore.js';
 import { useCoinStore } from '../stores/coinStore.js';
 import { useWSStore } from '../stores/wsStore.js';
 import { useHeartbeat } from '../hooks/useHeartbeat.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
+import { apiFetch } from '../services/api.js';
+import {
+  LogOut,
+  Coins,
+  Radio,
+  RefreshCw,
+  Tv,
+  Settings,
+  X,
+  ShoppingBag,
+  AlertCircle,
+  Award,
+  Check,
+  Shield,
+  Star
+} from 'lucide-react';
 
 function AuctionTimer({ endsAt, onExpire }: { endsAt: string; onExpire: () => void }) {
   const [timeLeft, setTimeLeft] = useState('');
@@ -29,38 +45,131 @@ function AuctionTimer({ endsAt, onExpire }: { endsAt: string; onExpire: () => vo
 
   return <span style={{ fontFamily: 'monospace', fontWeight: 'bold' }}>{timeLeft}</span>;
 }
-import {
-  LogOut,
-  Coins,
-  Radio,
-  RefreshCw,
-  Plus,
-  Trash2,
-  Tv,
-  Settings,
-  X,
-} from 'lucide-react';
 
-interface DashboardPageProps {
-  onNavigateToAdmin: () => void;
-}
-
-export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
+export function DashboardPage({ onNavigateToAdmin }: { onNavigateToAdmin: () => void }) {
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
 
-  const { channels, isLoading: channelsLoading, fetchChannels, addChannel, removeChannel } = useChannelStore();
+  const { channels, fetchChannels } = useChannelStore();
   const { balance, fetchBalance } = useCoinStore();
-  const { status: wsStatus, connect: wsConnect, disconnect: wsDisconnect } = useWSStore();
-  const { activeAuction, activeHighlight, fetchActiveAuction, placeBid: storePlaceBid } = useAuctionStore();
+  const { status: wsStatus, connect: wsConnect } = useWSStore();
+  const { activeAuction, activeHighlights, fetchActiveAuction, placeBid: storePlaceBid } = useAuctionStore();
 
-  const [newChannelSlug, setNewChannelSlug] = useState('');
-  const [filterSlug, setFilterSlug] = useState<string>('all');
-  const [adding, setAdding] = useState(false);
-  const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
+  const [manuallySelectedChannel, setManuallySelectedChannel] = useState<any>(null);
+  const [rotatedChannel, setRotatedChannel] = useState<any>(null);
 
+  // Leilão State
   const [bidChannelId, setBidChannelId] = useState('');
   const [bidAmount, setBidAmount] = useState(0);
+  const [bidLoading, setBidLoading] = useState(false);
+
+  // Shop Modal State
+  const [isShopOpen, setIsShopOpen] = useState(false);
+  const [shopPackages, setShopPackages] = useState<any[]>([]);
+  const [vipPriceCents, setVipPriceCents] = useState(2500);
+  const [pixConfig, setPixConfig] = useState<any>(null);
+  const [purchases, setPurchases] = useState<any[]>([]);
+
+  // Checkout state
+  const [selectedProduct, setSelectedProduct] = useState<{ type: 'COINS' | 'VIP'; packageId?: string; coins?: number; priceCents: number } | null>(null);
+  const [proofText, setProofText] = useState('');
+  const [purchaseStatusMsg, setPurchaseStatusMsg] = useState<string | null>(null);
+
+  // 1. Fetch initial data
+  useEffect(() => {
+    wsConnect();
+    fetchChannels();
+    fetchBalance();
+    fetchActiveAuction();
+
+    const fetchInterval = setInterval(() => {
+      fetchChannels();
+      fetchBalance();
+      fetchActiveAuction();
+    }, 45 * 1000); // refresh every 45s
+
+    return () => clearInterval(fetchInterval);
+  }, [wsConnect, fetchChannels, fetchBalance, fetchActiveAuction]);
+
+  // 2. Fetch Shop Details when open
+  useEffect(() => {
+    if (isShopOpen) {
+      const loadShop = async () => {
+        try {
+          const pkgsData = await apiFetch<{ packages: any[]; vipPriceCents: number }>('/shop/packages');
+          setShopPackages(pkgsData.packages);
+          setVipPriceCents(pkgsData.vipPriceCents);
+
+          const pixData = await apiFetch<any>('/shop/pix');
+          setPixConfig(pixData);
+
+          const purchData = await apiFetch<{ purchases: any[] }>('/shop/purchases');
+          setPurchases(purchData.purchases);
+        } catch (err) {
+          console.error('Erro ao carregar loja:', err);
+        }
+      };
+      loadShop();
+    }
+  }, [isShopOpen]);
+
+  // 3. Other active channels that are live (excluding the vitrines)
+  const otherLiveChannels = useMemo(() => {
+    const highlightIds = new Set((activeHighlights || []).map(h => h.channelId));
+    return channels.filter(c => c.isActive && c.isLive && !highlightIds.has(c.id));
+  }, [channels, activeHighlights]);
+
+  // 4. Handle 5-minute rotation timer for other live channels
+  useEffect(() => {
+    const rotate = () => {
+      if (otherLiveChannels.length > 0) {
+        const randomIndex = Math.floor(Math.random() * otherLiveChannels.length);
+        setRotatedChannel(otherLiveChannels[randomIndex]);
+      } else {
+        setRotatedChannel(null);
+      }
+    };
+
+    rotate();
+    const interval = setInterval(rotate, 5 * 60 * 1000); // 5 minutes rotation
+    return () => clearInterval(interval);
+  }, [otherLiveChannels]);
+
+  // 5. Active stream calculations
+  const activeStream = useMemo(() => {
+    if (manuallySelectedChannel) return manuallySelectedChannel;
+    if (rotatedChannel) return rotatedChannel;
+    // Fallback to first active highlight channel
+    if (activeHighlights.length > 0 && activeHighlights[0]?.channel?.isLive) {
+      return activeHighlights[0].channel;
+    }
+    return null;
+  }, [manuallySelectedChannel, rotatedChannel, activeHighlights]);
+
+  // 6. Staggered Heartbeats for active playing channels on client UI
+  const activeChannelIdsToWatch = useMemo(() => {
+    const ids = new Set<string>();
+    
+    // Add main playing channel
+    if (activeStream && activeStream.isLive) {
+      ids.add(activeStream.id);
+    }
+    
+    // Add all 5 vitrines playing at bottom
+    for (const slot of activeHighlights) {
+      if (slot.channel && slot.channel.isLive) {
+        ids.add(slot.channel.id);
+      }
+    }
+    
+    return Array.from(ids);
+  }, [activeStream, activeHighlights]);
+
+  useHeartbeat({
+    activeChannelIds: activeChannelIdsToWatch,
+    enabled: wsStatus === 'connected' && activeChannelIdsToWatch.length > 0,
+    intervalSeconds: 30,
+  });
 
   const handlePlaceBid = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,122 +183,180 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
       return;
     }
 
+    setBidLoading(true);
     try {
       await storePlaceBid(activeAuction.id, bidChannelId, bidAmount);
       setBidAmount(0);
       alert('Lance efetuado com sucesso!');
     } catch (err: any) {
       alert(err.message || 'Erro ao dar lance');
-    }
-  };
-
-
-  // 1. WebSocket & Initial fetches
-  useEffect(() => {
-    wsConnect();
-    fetchChannels();
-    fetchBalance();
-    fetchActiveAuction();
-
-    const fetchInterval = setInterval(() => {
-      fetchChannels();
-      fetchBalance();
-      fetchActiveAuction();
-    }, 45 * 1000); // refresh metadata every 45s
-
-    return () => {
-      clearInterval(fetchInterval);
-      wsDisconnect();
-    };
-  }, [wsConnect, wsDisconnect, fetchChannels, fetchBalance, fetchActiveAuction]);
-
-  // 2. Identify channels to watch (live and active)
-  const liveChannels = useMemo(() => {
-    return channels.filter((c) => c.isActive && c.isLive);
-  }, [channels]);
-
-  // 3. Staggered Heartbeat Loop for all live channels visible to the user
-  const activeChannelIdsToWatch = useMemo(() => {
-    // If filtering to a specific channel, only heartbeat for that one
-    if (filterSlug !== 'all') {
-      const selected = liveChannels.find((c) => c.slug === filterSlug);
-      return selected ? [selected.id] : [];
-    }
-    return liveChannels.map((c) => c.id);
-  }, [liveChannels, filterSlug]);
-
-  useHeartbeat({
-    activeChannelIds: activeChannelIdsToWatch,
-    enabled: wsStatus === 'connected' && activeChannelIdsToWatch.length > 0,
-    intervalSeconds: 30,
-  });
-
-  const handleAddChannel = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newChannelSlug) return;
-    setAdding(true);
-    try {
-      await addChannel(newChannelSlug);
-      setNewChannelSlug('');
-    } catch (err: any) {
-      alert(err.message || 'Erro ao adicionar canal');
     } finally {
-      setAdding(false);
+      setBidLoading(false);
     }
   };
 
-  const handleRemoveChannel = async (id: string, name: string) => {
-    if (confirm(`Tem certeza que deseja remover o canal ${name}?`)) {
-      try {
-        await removeChannel(id);
-        if (expandedSlug === name) setExpandedSlug(null);
-      } catch (err: any) {
-        alert(err.message || 'Erro ao remover canal');
-      }
+  const handleCreatePurchase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProduct || !proofText) return;
+
+    try {
+      const res = await apiFetch<any>('/shop/purchase', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: selectedProduct.type,
+          packageId: selectedProduct.packageId,
+          proofUrl: proofText,
+        })
+      });
+
+      setPurchaseStatusMsg(res.message);
+      setProofText('');
+      setSelectedProduct(null);
+      // Reload purchases
+      const purchData = await apiFetch<{ purchases: any[] }>('/shop/purchases');
+      setPurchases(purchData.purchases);
+    } catch (err: any) {
+      alert(err.message || 'Erro ao processar compra');
     }
   };
 
-  // Filter and sort channels to display in the main grid (prioritizing the active highlight)
-  const visibleChannels = useMemo(() => {
-    let active = channels.filter((c) => c.isActive);
-    if (filterSlug !== 'all') {
-      active = active.filter((c) => c.slug === filterSlug);
+  const flagColorEmoji = (color: string) => {
+    switch (color) {
+      case 'yellow': return '🟡';
+      case 'orange': return '🟠';
+      case 'red': return '🔴';
+      default: return '🟢';
     }
-    
-    // Sort so highlighted channel is first
-    if (activeHighlight && filterSlug === 'all') {
-      const idx = active.findIndex((c) => c.id === activeHighlight.channelId);
-      if (idx !== -1) {
-        const copy = [...active];
-        const [highlighted] = copy.splice(idx, 1);
-        return [highlighted, ...copy];
-      }
-    }
-    return active;
-  }, [channels, filterSlug, activeHighlight]);
+  };
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER';
 
   return (
-    <div className="app-container">
+    <div className="app-container" style={styles.appContainer}>
       {/* HEADER NAVBAR */}
       <header style={styles.header}>
         <div style={styles.brand}>
           <Radio size={24} color="#8b5cf6" className="pulse" />
-          <h1 style={styles.brandTitle}>LurkSquad</h1>
-          <span style={{ ...styles.wsBadge, color: wsStatus === 'connected' ? '#10b981' : '#f59e0b' }}>
-            ● {wsStatus === 'connected' ? 'Servidor Conectado' : 'Conectando...'}
-          </span>
+          <div>
+            <h1 style={styles.brandTitle}>LurkSquad</h1>
+            <span style={{ fontSize: '0.65rem', color: wsStatus === 'connected' ? '#10b981' : '#f59e0b', fontWeight: 700 }}>
+              ● {wsStatus === 'connected' ? 'LIVE SYNC' : 'OFFLINE'}
+            </span>
+          </div>
         </div>
 
+        {/* VITRINES E ROTAÇÃO CIRCULAR */}
+        <div style={styles.circlesRow}>
+          {/* Active Vitrines Slots (always 5 slots shown) */}
+          {Array.from({ length: 5 }).map((_, index) => {
+            const slot = activeHighlights[index];
+            const isPlaying = activeStream?.id === slot?.channelId;
+
+            return (
+              <div
+                key={index}
+                style={{
+                  ...styles.circleWrapper,
+                  transform: isPlaying ? 'scale(1.1)' : 'scale(1)',
+                }}
+                onClick={() => slot && setManuallySelectedChannel(slot.channel)}
+              >
+                {slot ? (
+                  <div
+                    style={{
+                      ...styles.circle,
+                      ...styles.circleVitrine,
+                      borderColor: isPlaying ? '#fbbf24' : '#d97706',
+                      boxShadow: isPlaying ? '0 0 15px rgba(251, 191, 36, 0.6)' : 'none',
+                    }}
+                  >
+                    {slot.channel.avatarUrl ? (
+                      <img src={slot.channel.avatarUrl} alt="" style={styles.circleImg} />
+                    ) : (
+                      <span style={styles.circleFallback}>{slot.channel.slug[0].toUpperCase()}</span>
+                    )}
+                    <span style={styles.starBadge}><Star size={10} color="#000" fill="#fff" /></span>
+                  </div>
+                ) : (
+                  <div style={{ ...styles.circle, ...styles.circleEmpty }} title="Vaga de vitrine livre">
+                    <span style={styles.circleFallback}>+</span>
+                  </div>
+                )}
+                <span style={styles.circleLabel}>Vaga {index + 1}</span>
+              </div>
+            );
+          })}
+
+          {/* Divider */}
+          <div style={styles.rowDivider} />
+
+          {/* Other rotating channels */}
+          {otherLiveChannels.slice(0, 4).map((chan) => {
+            const isPlaying = activeStream?.id === chan.id;
+            return (
+              <div
+                key={chan.id}
+                style={{
+                  ...styles.circleWrapper,
+                  transform: isPlaying ? 'scale(1.1)' : 'scale(1)',
+                }}
+                onClick={() => setManuallySelectedChannel(chan)}
+              >
+                <div
+                  style={{
+                    ...styles.circle,
+                    borderColor: isPlaying ? '#8b5cf6' : '#4b5563',
+                    boxShadow: isPlaying ? '0 0 12px rgba(139, 92, 246, 0.5)' : 'none',
+                  }}
+                >
+                  {chan.avatarUrl ? (
+                    <img src={chan.avatarUrl} alt="" style={styles.circleImg} />
+                  ) : (
+                    <span style={styles.circleFallback}>{chan.slug[0].toUpperCase()}</span>
+                  )}
+                </div>
+                <span style={styles.circleLabel}>{chan.displayName || chan.slug}</span>
+              </div>
+            );
+          })}
+
+          {otherLiveChannels.length === 0 && (
+            <span style={{ fontSize: '0.75rem', color: '#6b7280', alignSelf: 'center' }}>Sem outras lives online</span>
+          )}
+        </div>
+
+        {/* NAV ACTIONS */}
         <div style={styles.navActions}>
+          {/* Loja Button */}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ ...styles.navBtn, borderColor: 'rgba(139, 92, 246, 0.3)', color: '#a78bfa' }}
+            onClick={() => setIsShopOpen(true)}
+          >
+            <ShoppingBag size={15} />
+            Loja Lurk
+          </button>
+
           {/* Coins Display */}
           <div style={styles.coinsDisplay}>
             <Coins size={18} color="#f59e0b" />
-            <span style={styles.coinBalance}>{balance} moedas</span>
+            <span style={styles.coinBalance}>{balance}</span>
           </div>
 
-          {/* Admin Panel Link */}
+          {/* Profile mini info */}
+          <div style={styles.userMini}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span>{flagColorEmoji(user?.flagColor ?? 'green')}</span>
+              <span style={styles.userDisplay}>{user?.displayName}</span>
+              {user?.plan === 'VIP' && (
+                <span style={styles.vipBadge}><Award size={10} style={{ marginRight: 2 }} />VIP</span>
+              )}
+            </div>
+            <span style={styles.userRoleBadge}>{user?.role}</span>
+          </div>
+
+          {/* Settings / Admin Link */}
           {isAdmin && (
             <button
               type="button"
@@ -198,16 +365,10 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
               onClick={onNavigateToAdmin}
             >
               <Settings size={15} />
-              Administração
             </button>
           )}
 
-          {/* User profile mini card */}
-          <div style={styles.userMini}>
-            <span style={styles.userDisplay}>{user?.displayName}</span>
-            <span style={styles.userRoleBadge}>{user?.role}</span>
-          </div>
-
+          {/* Logout */}
           <button
             type="button"
             className="btn btn-secondary"
@@ -215,369 +376,520 @@ export function DashboardPage({ onNavigateToAdmin }: DashboardPageProps) {
             onClick={() => void logout()}
           >
             <LogOut size={15} color="#ef4444" />
-            Sair
           </button>
         </div>
       </header>
 
       {/* DASHBOARD BODY */}
       <div style={styles.body}>
-        {/* SIDEBAR */}
+        {/* SIDEBAR: LEILÃO E STATUS */}
         <aside style={styles.sidebar}>
           <div style={styles.sidebarHeader}>
-            <h3 style={styles.sidebarTitle}>Canais Permitidos ({channels.filter(c => c.isActive).length})</h3>
+            <h3 style={styles.sidebarTitle}>Painel do Leilão</h3>
             <button
               type="button"
               style={styles.sidebarRefresh}
               onClick={() => {
                 fetchChannels();
                 fetchBalance();
+                fetchActiveAuction();
               }}
-              disabled={channelsLoading}
             >
-              <RefreshCw size={14} className={channelsLoading ? 'spin' : ''} />
+              <RefreshCw size={14} />
             </button>
           </div>
 
-          {/* Add Channel Form (Admins Only) */}
-          {isAdmin && (
-            <form onSubmit={handleAddChannel} style={styles.addForm}>
-              <input
-                className="input-field"
-                style={styles.addInput}
-                type="text"
-                placeholder="Slug Kick (ex: leokaos)"
-                value={newChannelSlug}
-                onChange={(e) => setNewChannelSlug(e.target.value)}
-                disabled={adding}
-              />
-              <button
-                type="submit"
-                className="btn btn-primary"
-                style={styles.addBtn}
-                disabled={adding || !newChannelSlug}
-              >
-                <Plus size={16} />
-              </button>
-            </form>
-          )}
-
-          {/* Channels list */}
-          <div style={styles.sidebarList}>
-            <button
-              type="button"
-              style={{
-                ...styles.channelItem,
-                background: filterSlug === 'all' ? 'rgba(139, 92, 246, 0.15)' : 'transparent',
-                borderColor: filterSlug === 'all' ? 'var(--color-primary-glow)' : 'transparent',
-              }}
-              onClick={() => setFilterSlug('all')}
-            >
-              <Tv size={15} color="#8b5cf6" />
-              <span style={{ fontWeight: filterSlug === 'all' ? 600 : 400 }}>Ver Todas as Lives</span>
-              {liveChannels.length > 0 && (
-                <span style={styles.liveCountBadge}>{liveChannels.length} ON</span>
-              )}
-            </button>
-
-            {channels
-              .filter((c) => c.isActive)
-              .map((channel) => (
-                <div key={channel.id} style={styles.channelItemWrapper}>
-                  <button
-                    type="button"
-                    style={{
-                      ...styles.channelItem,
-                      background: filterSlug === channel.slug ? 'rgba(139, 92, 246, 0.12)' : 'transparent',
-                      borderColor: filterSlug === channel.slug ? 'var(--color-primary-glow)' : 'transparent',
-                      flex: 1,
-                    }}
-                    onClick={() => setFilterSlug(channel.slug)}
-                  >
-                    {channel.avatarUrl ? (
-                      <img src={channel.avatarUrl} alt={channel.slug} style={styles.avatar} />
-                    ) : (
-                      <div style={styles.avatarFallback}>{channel.slug[0].toUpperCase()}</div>
-                    )}
-                    <div style={styles.channelMeta}>
-                      <span style={styles.channelName}>{channel.displayName || channel.slug}</span>
-                      {channel.isLive ? (
-                        <span style={styles.liveSubText}>{channel.category || 'Streaming'}</span>
-                      ) : (
-                        <span style={styles.offlineSubText}>offline</span>
-                      )}
-                    </div>
-                    {channel.isLive && <div className="live-dot" />}
-                  </button>
-
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      style={styles.deleteBtn}
-                      onClick={() => handleRemoveChannel(channel.id, channel.slug)}
-                      title="Deletar canal"
-                    >
-                      <Trash2 size={13} color="#ef4444" />
-                    </button>
-                  )}
-                </div>
-              ))}
-          </div>
-        </aside>
-
-        {/* MAIN EMBEDS GRID */}
-        <main style={styles.mainGrid}>
-          {/* Active Auction Banner */}
+          {/* Leilão Details */}
           {activeAuction ? (
-            <div style={styles.auctionBanner}>
-              <div style={styles.auctionHeader}>
-                <span style={styles.auctionTag}>🔨 LEILÃO DE DESTAQUE</span>
-                <div style={styles.auctionTitleGroup}>
-                  <h3 style={styles.auctionTitle}>{activeAuction.title}</h3>
-                  <span style={styles.auctionTimer}>
-                    Tempo restante: <AuctionTimer endsAt={activeAuction.endsAt} onExpire={fetchActiveAuction} />
-                  </span>
+            <div style={styles.sidebarAuctionBox}>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <span style={styles.auctionTimerLabel}>Fim do Leilão</span>
+                <div style={styles.auctionTimerVal}>
+                  <AuctionTimer endsAt={activeAuction.endsAt} onExpire={fetchActiveAuction} />
                 </div>
+                {activeAuction.bidsHidden ? (
+                  <span style={styles.blindIndicator}>🔒 Lances Cegos (Ocultos)</span>
+                ) : (
+                  <span style={styles.revealedIndicator}>👁️ Lances Revelados!</span>
+                )}
               </div>
-              
-              <div style={styles.auctionContent}>
-                <div style={styles.auctionStatus}>
-                  <div>
-                    <span style={styles.auctionLabel}>LANCE MÁXIMO ATUAL</span>
-                    <div style={styles.auctionValue}>
-                      {activeAuction.bids.length > 0 
-                        ? `${activeAuction.bids[0].amount} moedas por @${activeAuction.bids[0].user.displayName}` 
-                        : `${activeAuction.minBid} moedas (Aguardando lances)`
-                      }
-                    </div>
-                  </div>
-                  <div>
-                    <span style={styles.auctionLabel}>INCREMENTO MÍNIMO</span>
-                    <div style={styles.auctionSubvalue}>+{activeAuction.bidIncrement} moedas</div>
-                  </div>
-                </div>
 
-                {/* Place Bid Form */}
-                <form onSubmit={handlePlaceBid} style={styles.bidForm}>
+              {/* Bids List */}
+              <div style={styles.bidsListContainer}>
+                <span style={styles.bidsTitle}>Lances no Top 5</span>
+                
+                {activeAuction.bidsHidden ? (
+                  <div style={styles.blindBidsPlaceholder}>
+                    <Shield size={24} color="#6b7280" style={{ marginBottom: '0.5rem' }} />
+                    <span style={{ fontSize: '0.75rem', color: '#6b7280', textAlign: 'center' }}>
+                      Os lances estão ocultos até os últimos 10 minutos (XX:40) para evitar sniping.
+                    </span>
+                    {activeAuction.bids.length > 0 && (
+                      <div style={styles.ownBidBox}>
+                        <span>Seu lance ativo:</span>
+                        <strong>{activeAuction.bids[0].amount} moedas</strong>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={styles.bidsList}>
+                    {activeAuction.bids.slice(0, 5).map((bid, i) => (
+                      <div key={bid.id} style={styles.bidRow}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                          <span style={styles.bidRank}>{i + 1}º</span>
+                          <span style={styles.bidUser}>@{bid.user.displayName}</span>
+                        </div>
+                        <span style={styles.bidAmount}>{bid.amount} moedas</span>
+                      </div>
+                    ))}
+                    {activeAuction.bids.length === 0 && (
+                      <span style={{ fontSize: '0.8rem', color: '#6b7280', textAlign: 'center', padding: '1rem' }}>
+                        Sem lances ainda
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Place Bid Form */}
+              <form onSubmit={handlePlaceBid} style={styles.sidebarBidForm}>
+                <div className="form-group" style={{ marginBottom: '0.75rem' }}>
+                  <label className="form-label" style={{ fontSize: '0.7rem' }}>Canal para Destacar</label>
                   <select
                     className="input-field"
-                    style={styles.bidSelect}
+                    style={{ fontSize: '0.8rem', padding: '0.45rem' }}
                     value={bidChannelId}
                     onChange={(e) => setBidChannelId(e.target.value)}
                   >
-                    <option value="">Destacar Canal...</option>
+                    <option value="">Selecione...</option>
                     {channels.filter(c => c.isActive).map(c => (
                       <option key={c.id} value={c.id}>
                         {c.displayName || c.slug}
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label className="form-label" style={{ fontSize: '0.7rem' }}>Valor em Moedas</label>
                   <input
                     className="input-field"
-                    style={styles.bidInput}
+                    style={{ fontSize: '0.8rem', padding: '0.45rem' }}
                     type="number"
-                    placeholder="Valor"
+                    placeholder={`Mínimo ${activeAuction.minBid}`}
                     value={bidAmount || ''}
                     onChange={(e) => setBidAmount(parseInt(e.target.value) || 0)}
                   />
-                  <button type="submit" className="btn btn-primary" style={styles.bidBtn}>
-                    Dar Lance
-                  </button>
-                </form>
-              </div>
-            </div>
-          ) : activeHighlight ? (
-            <div style={styles.highlightBanner}>
-              <span>🌟 O canal <strong>@{activeHighlight.channel.displayName || activeHighlight.channel.slug}</strong> está destacado em primeiro lugar por vencer o leilão! Expira em: <AuctionTimer endsAt={activeHighlight.endsAt} onExpire={fetchActiveAuction} /></span>
-            </div>
-          ) : null}
+                </div>
 
-          {visibleChannels.length === 0 ? (
-            <div style={styles.emptyGrid}>
-              <Tv size={48} color="#4b5563" style={{ marginBottom: '1rem' }} />
-              <h3>Nenhum canal ativo</h3>
-              <p>Adicione slugs no menu lateral para iniciar o LurkSquad.</p>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center' }}
+                  disabled={bidLoading}
+                >
+                  {bidLoading ? 'Processando...' : 'Dar Lance Cego'}
+                </button>
+              </form>
             </div>
           ) : (
-            <div style={expandedSlug ? styles.expandedGrid : styles.grid}>
-              {visibleChannels.map((channel) => {
-                const isExpanded = expandedSlug === channel.slug;
-                
-                // If expanded mode is active and this card is NOT the expanded card, hide it
-                if (expandedSlug && !isExpanded) return null;
+            <div style={styles.noAuctionBox}>
+              <AlertCircle size={28} color="#6b7280" />
+              <span>Sem leilão aberto no momento.</span>
+            </div>
+          )}
+        </aside>
 
-                const isHighlighted = activeHighlight?.channelId === channel.id;
+        {/* MAIN EMBED PLAYER AREA */}
+        <main style={styles.mainContent}>
+          {/* Main stream player */}
+          <div style={styles.mainPlayerCard} className="glass-card">
+            {activeStream ? (
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                {/* Player header */}
+                <div style={styles.playerHeader}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div className="live-dot" />
+                    <span style={styles.playerName}>Assistindo: @{activeStream.displayName || activeStream.slug}</span>
+                    {activeHighlights.some(h => h.channelId === activeStream.id) && (
+                      <span style={styles.playerHighlightTag}>★ Vitrine</span>
+                    )}
+                  </div>
+                  
+                  {manuallySelectedChannel && (
+                    <button
+                      type="button"
+                      style={styles.resetRotationBtn}
+                      onClick={() => setManuallySelectedChannel(null)}
+                      title="Voltar para rotação automática"
+                    >
+                      <X size={12} style={{ marginRight: 4 }} />
+                      Voltar para Rotação (5m)
+                    </button>
+                  )}
+                </div>
 
+                {/* Iframe */}
+                <div style={styles.iframeWrapper}>
+                  <iframe
+                    src={`https://player.kick.com/${activeStream.slug}?autoplay=true&muted=true`}
+                    style={styles.mainIframe}
+                    frameBorder="0"
+                    scrolling="no"
+                    allowFullScreen={false}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div style={styles.noStreamPlaceholder}>
+                <Tv size={64} color="#374151" style={{ marginBottom: '1rem' }} />
+                <h3>Nenhuma live online no momento</h3>
+                <p style={{ color: '#6b7280', fontSize: '0.85rem' }}>
+                  Os canais cadastrados estão offline ou aguardando sincronização periódica.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* BOTTOM VITRINES MINI-PLAYERS (The 5 always embedded playing in background) */}
+          <div style={styles.vitrinesPanel}>
+            <div style={styles.vitrinesPanelHeader}>
+              <Award size={14} color="#fbbf24" />
+              <span style={styles.vitrinesPanelTitle}>Vitrines Ativas (Rodando em Background para acúmulo de Farm)</span>
+            </div>
+
+            <div style={styles.vitrinesGrid}>
+              {Array.from({ length: 5 }).map((_, index) => {
+                const slot = activeHighlights[index];
                 return (
-                  <div
-                    key={channel.id}
-                    className="glass-card"
-                    style={{
-                      ...styles.card,
-                      gridColumn: isExpanded ? '1 / -1' : 'auto',
-                      gridRow: isExpanded ? '1 / -1' : 'auto',
-                      borderColor: isHighlighted
-                        ? '#8b5cf6'
-                        : channel.isLive
-                        ? 'rgba(16, 185, 129, 0.2)'
-                        : 'var(--border-color)',
-                      boxShadow: isHighlighted
-                        ? '0 0 20px rgba(139, 92, 246, 0.45), inset 0 0 10px rgba(139, 92, 246, 0.25)'
-                        : 'none',
-                    }}
-                  >
-                    {/* Card Header */}
-                    <div style={styles.cardHeader}>
-                      <div style={styles.cardInfo}>
-                        {channel.avatarUrl ? (
-                          <img src={channel.avatarUrl} alt="" style={styles.avatarMini} />
+                  <div key={index} style={styles.vitrineMiniCard} className="glass-card">
+                    {slot ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                        <span style={styles.vitrineMiniName}>@{slot.channel.displayName || slot.channel.slug}</span>
+                        {slot.channel.isLive ? (
+                          <div style={{ flex: 1, backgroundColor: '#000', borderRadius: '4px', overflow: 'hidden' }}>
+                            <iframe
+                              src={`https://player.kick.com/${slot.channel.slug}?autoplay=true&muted=true`}
+                              style={{ width: '100%', height: '100%', border: 'none' }}
+                              scrolling="no"
+                              frameBorder="0"
+                            />
+                          </div>
                         ) : (
-                          <div style={styles.avatarFallbackMini}>{channel.slug[0].toUpperCase()}</div>
-                        )}
-                        <div>
-                          <h4 style={styles.cardTitle}>{channel.displayName || channel.slug}</h4>
-                          {channel.isLive && (
-                            <span style={styles.cardCategory}>{channel.category || 'Live'}</span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div style={styles.cardActions}>
-                        {channel.isLive && (
-                          <div className="live-indicator">
-                            <span className="live-dot" />
-                            <span>{channel.viewers} Assistindo</span>
+                          <div style={styles.miniOffline}>
+                            <span style={{ fontSize: '0.65rem', color: '#6b7280' }}>offline</span>
                           </div>
                         )}
-
-                        <button
-                          type="button"
-                          style={styles.cardActionBtn}
-                          onClick={() => setExpandedSlug(isExpanded ? null : channel.slug)}
-                          title={isExpanded ? 'Minimizar tela' : 'Maximizar tela'}
-                        >
-                          {isExpanded ? <X size={14} /> : <Tv size={14} />}
-                        </button>
                       </div>
-                    </div>
-
-                    {/* Stream Embed Player Area */}
-                    <div style={styles.playerContainer}>
-                      {channel.isLive ? (
-                        <iframe
-                          src={`https://player.kick.com/${channel.slug}?autoplay=true&muted=true`}
-                          style={styles.iframe}
-                          frameBorder="0"
-                          scrolling="no"
-                          allowFullScreen={false}
-                        />
-                      ) : (
-                        <div style={styles.offlinePlaceholder}>
-                          <Tv size={36} color="#4b5563" style={{ marginBottom: '0.5rem' }} />
-                          <span>Stream offline</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Card Footer */}
-                    {channel.isLive && (
-                      <div style={styles.cardFooter}>
-                        <span style={styles.farmingAlert}>
-                          🪙 Ganhando moedas a cada minuto assistido...
-                        </span>
+                    ) : (
+                      <div style={styles.miniEmpty}>
+                        <span style={{ fontSize: '0.65rem', color: '#374151' }}>Vaga Livre</span>
                       </div>
                     )}
                   </div>
                 );
               })}
             </div>
-          )}
+          </div>
         </main>
       </div>
+
+      {/* LOJA MODAL */}
+      {isShopOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalCard} className="glass-card">
+            <div style={styles.modalHeader}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <ShoppingBag size={20} color="#a78bfa" />
+                <h2 style={styles.modalTitle}>Loja LurkSquad</h2>
+              </div>
+              <button type="button" style={styles.closeBtn} onClick={() => { setIsShopOpen(false); setSelectedProduct(null); setPurchaseStatusMsg(null); }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={styles.modalBody}>
+              {/* Product Selection */}
+              <div style={styles.productsGrid}>
+                {/* VIP Card */}
+                <div
+                  style={{
+                    ...styles.productCard,
+                    borderColor: selectedProduct?.type === 'VIP' ? '#a78bfa' : 'rgba(255, 255, 255, 0.05)',
+                    background: selectedProduct?.type === 'VIP' ? 'rgba(139, 92, 246, 0.08)' : 'rgba(255, 255, 255, 0.01)',
+                  }}
+                  onClick={() => setSelectedProduct({ type: 'VIP', priceCents: vipPriceCents })}
+                >
+                  <div style={styles.vipBadgeBig}>VIP</div>
+                  <h4 style={styles.productTitle}>Plano VIP 30 dias</h4>
+                  <p style={styles.productDesc}>2x mais farm de moedas + Badge dourada + Prioridade de desempate no leilão.</p>
+                  <span style={styles.productPrice}>R$ {(vipPriceCents / 100).toFixed(2)}</span>
+                </div>
+
+                {/* Coin Packages */}
+                {shopPackages.map((pkg) => (
+                  <div
+                    key={pkg.id}
+                    style={{
+                      ...styles.productCard,
+                      borderColor: selectedProduct?.packageId === pkg.id ? '#f59e0b' : 'rgba(255, 255, 255, 0.05)',
+                      background: selectedProduct?.packageId === pkg.id ? 'rgba(245, 158, 11, 0.08)' : 'rgba(255, 255, 255, 0.01)',
+                    }}
+                    onClick={() => setSelectedProduct({ type: 'COINS', packageId: pkg.id, coins: pkg.coins, priceCents: pkg.priceCents })}
+                  >
+                    <div style={styles.coinsIconBadge}><Coins size={14} color="#f59e0b" /></div>
+                    <h4 style={styles.productTitle}>{pkg.name}</h4>
+                    <p style={styles.productDesc}>Adiciona {pkg.coins} moedas na sua carteira para lances de destaque.</p>
+                    <span style={styles.productPrice}>R$ {(pkg.priceCents / 100).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Checkout Form */}
+              {selectedProduct && pixConfig && (
+                <form onSubmit={handleCreatePurchase} style={styles.checkoutBox}>
+                  <h3 style={styles.checkoutTitle}>Instruções de Pagamento via PIX</h3>
+                  <div style={styles.pixInfoCard}>
+                    <div style={styles.pixRow}>
+                      <span>Chave PIX ({pixConfig.keyType.toUpperCase()}):</span>
+                      <strong style={{ fontFamily: 'monospace' }}>{pixConfig.keyValue}</strong>
+                    </div>
+                    <div style={styles.pixRow}>
+                      <span>Titular:</span>
+                      <strong>{pixConfig.holderName}</strong>
+                    </div>
+                    <div style={styles.pixRow}>
+                      <span>Valor a pagar:</span>
+                      <strong style={{ color: '#10b981' }}>R$ {(selectedProduct.priceCents / 100).toFixed(2)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ marginTop: '1rem' }}>
+                    <label className="form-label" htmlFor="proof">
+                      Comprovante de Pagamento
+                    </label>
+                    <textarea
+                      id="proof"
+                      className="input-field"
+                      style={{ fontSize: '0.85rem', minHeight: '60px', padding: '0.5rem' }}
+                      placeholder="Cole o código do comprovante PIX, hash da transação ou descrição do comprovante enviado."
+                      value={proofText}
+                      onChange={(e) => setProofText(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '0.75rem' }}>
+                    Enviar Comprovante para Validação
+                  </button>
+                </form>
+              )}
+
+              {purchaseStatusMsg && (
+                <div style={styles.successAlert}>
+                  <Check size={18} color="#10b981" />
+                  <span>{purchaseStatusMsg}</span>
+                </div>
+              )}
+
+              {/* Purchase History */}
+              <div style={styles.historyContainer}>
+                <h3 style={styles.historyTitle}>Seu Histórico de Compras</h3>
+                <div style={styles.historyList}>
+                  {purchases.map((pur) => (
+                    <div key={pur.id} style={styles.historyRow}>
+                      <div>
+                        <strong>{pur.type === 'VIP' ? 'Plano VIP 30 dias' : `Pacote ${pur.coins} moedas`}</strong>
+                        <span style={styles.historyDate}>{new Date(pur.createdAt).toLocaleDateString()}</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>R$ {(pur.priceCents / 100).toFixed(2)}</span>
+                        <span
+                          style={{
+                            ...styles.statusBadge,
+                            color: pur.status === 'CONFIRMED' ? '#10b981' : pur.status === 'REJECTED' ? '#ef4444' : '#f59e0b',
+                            backgroundColor: pur.status === 'CONFIRMED' ? 'rgba(16, 185, 129, 0.1)' : pur.status === 'REJECTED' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                          }}
+                        >
+                          {pur.status}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {purchases.length === 0 && (
+                    <span style={{ fontSize: '0.85rem', color: '#6b7280', textAlign: 'center', padding: '1rem' }}>
+                      Nenhuma solicitação enviada ainda.
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 const styles = {
+  appContainer: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    height: '100vh',
+    width: '100vw',
+    backgroundColor: '#0a0a0f',
+    overflow: 'hidden',
+  },
   header: {
-    height: '64px',
+    height: '70px',
     borderBottom: '1px solid var(--border-color)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '0 1.5rem',
-    background: 'rgba(10, 10, 15, 0.8)',
+    background: 'rgba(10, 10, 15, 0.9)',
     backdropFilter: 'var(--glass-blur)',
     zIndex: 10,
   },
   brand: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.75rem',
+    gap: '0.65rem',
   },
   brandTitle: {
-    fontSize: '1.25rem',
+    fontSize: '1.2rem',
     fontWeight: 800,
     background: 'linear-gradient(135deg, #fff, #a78bfa)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
     letterSpacing: '-0.02em',
+    lineHeight: 1.1,
   },
-  wsBadge: {
-    fontSize: '0.75rem',
-    fontWeight: 600,
-    marginLeft: '0.75rem',
-    background: 'rgba(255, 255, 255, 0.02)',
-    padding: '0.25rem 0.5rem',
-    borderRadius: '6px',
-    border: '1px solid var(--border-color)',
+  circlesRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.85rem',
+    flex: 1,
+    justifyContent: 'center',
+    padding: '0 2rem',
+    overflowX: 'auto' as const,
+  },
+  circleWrapper: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    cursor: 'pointer',
+    transition: 'transform 0.2s ease',
+  },
+  circle: {
+    width: '42px',
+    height: '42px',
+    borderRadius: '50%',
+    border: '2px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    position: 'relative' as const,
+  },
+  circleVitrine: {
+    width: '48px',
+    height: '48px',
+  },
+  circleEmpty: {
+    borderColor: '#374151',
+    borderStyle: 'dashed',
+  },
+  circleImg: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover' as const,
+  },
+  circleFallback: {
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: '#9ca3af',
+  },
+  starBadge: {
+    position: 'absolute' as const,
+    bottom: '-1px',
+    right: '-1px',
+    backgroundColor: '#fbbf24',
+    borderRadius: '50%',
+    padding: '2px',
+    display: 'flex',
+  },
+  circleLabel: {
+    fontSize: '0.6rem',
+    color: '#9ca3af',
+    marginTop: '0.25rem',
+    maxWidth: '50px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  rowDivider: {
+    height: '24px',
+    width: '1px',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    margin: '0 0.25rem',
   },
   navActions: {
     display: 'flex',
     alignItems: 'center',
-    gap: '1rem',
+    gap: '0.75rem',
   },
   coinsDisplay: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.5rem',
-    background: 'rgba(245, 158, 11, 0.1)',
-    border: '1px solid rgba(245, 158, 11, 0.2)',
-    padding: '0.45rem 0.85rem',
-    borderRadius: 'var(--radius-md)',
+    gap: '0.35rem',
+    background: 'rgba(245, 158, 11, 0.08)',
+    border: '1px solid rgba(245, 158, 11, 0.15)',
+    padding: '0.4rem 0.65rem',
+    borderRadius: '8px',
   },
   coinBalance: {
     fontSize: '0.85rem',
-    fontWeight: 700,
+    fontWeight: 800,
     color: '#f59e0b',
   },
   navBtn: {
-    padding: '0.45rem 0.85rem',
-    fontSize: '0.8rem',
-    gap: '0.4rem',
+    padding: '0.45rem',
+    fontSize: '0.85rem',
   },
   userMini: {
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'flex-end',
-    borderRight: '1px solid var(--border-color)',
-    paddingRight: '1rem',
+    borderRight: '1px solid rgba(255, 255, 255, 0.08)',
+    paddingRight: '0.75rem',
   },
   userDisplay: {
-    fontSize: '0.85rem',
+    fontSize: '0.8rem',
     fontWeight: 600,
+    color: '#f3f4f6',
   },
   userRoleBadge: {
-    fontSize: '0.65rem',
-    color: '#8b5cf6',
-    fontWeight: 700,
+    fontSize: '0.6rem',
+    color: '#9ca3af',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
+  },
+  vipBadge: {
+    fontSize: '0.6rem',
+    backgroundColor: '#fbbf24',
+    color: '#000',
+    fontWeight: 800,
+    padding: '1px 4px',
+    borderRadius: '4px',
+    display: 'inline-flex',
+    alignItems: 'center',
   },
   body: {
     display: 'flex',
     flex: 1,
-    height: 'calc(100vh - 64px)',
+    height: 'calc(100vh - 70px)',
     overflow: 'hidden',
   },
   sidebar: {
@@ -585,14 +897,14 @@ const styles = {
     borderRight: '1px solid var(--border-color)',
     display: 'flex',
     flexDirection: 'column' as const,
-    background: 'rgba(18, 18, 30, 0.4)',
+    background: 'rgba(10, 10, 15, 0.5)',
     backdropFilter: 'var(--glass-blur)',
   },
   sidebarHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '1.25rem 1rem',
+    padding: '1rem',
     borderBottom: '1px solid var(--border-color)',
   },
   sidebarTitle: {
@@ -607,355 +919,404 @@ const styles = {
     cursor: 'pointer',
     outline: 'none',
   },
-  addForm: {
+  sidebarAuctionBox: {
     padding: '1rem',
     display: 'flex',
-    gap: '0.5rem',
-    borderBottom: '1px solid var(--border-color)',
-  },
-  addInput: {
-    flex: 1,
-    padding: '0.45rem 0.75rem',
-    fontSize: '0.8rem',
-  },
-  addBtn: {
-    padding: '0 0.75rem',
-  },
-  sidebarList: {
+    flexDirection: 'column' as const,
     flex: 1,
     overflowY: 'auto' as const,
-    padding: '0.5rem',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '0.25rem',
   },
-  channelItemWrapper: {
-    display: 'flex',
-    alignItems: 'center',
-    position: 'relative' as const,
-  },
-  channelItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.75rem',
-    padding: '0.65rem 0.75rem',
-    borderRadius: '8px',
-    border: '1px solid transparent',
-    color: '#d1d5db',
-    cursor: 'pointer',
-    textAlign: 'left' as const,
-    transition: 'var(--transition-fast)',
-    background: 'transparent',
-    outline: 'none',
-  },
-  avatar: {
-    width: '24px',
-    height: '24px',
-    borderRadius: 'var(--radius-full)',
-    border: '1px solid rgba(255,255,255,0.1)',
-  },
-  avatarFallback: {
-    width: '24px',
-    height: '24px',
-    borderRadius: 'var(--radius-full)',
-    backgroundColor: 'rgba(139, 92, 246, 0.2)',
-    color: '#8b5cf6',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '0.75rem',
-    fontWeight: 600,
-  },
-  channelMeta: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    flex: 1,
-    overflow: 'hidden',
-  },
-  channelName: {
-    fontSize: '0.825rem',
-    fontWeight: 600,
-    color: '#e5e7eb',
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  liveSubText: {
-    fontSize: '0.7rem',
-    color: '#10b981',
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  offlineSubText: {
-    fontSize: '0.7rem',
-    color: '#6b7280',
-  },
-  liveCountBadge: {
+  auctionTimerLabel: {
     fontSize: '0.65rem',
-    fontWeight: 700,
-    background: 'rgba(16, 185, 129, 0.15)',
-    border: '1px solid rgba(16, 185, 129, 0.3)',
-    color: '#10b981',
-    padding: '0.15rem 0.35rem',
-    borderRadius: '4px',
-    marginLeft: 'auto',
-  },
-  deleteBtn: {
-    position: 'absolute' as const,
-    right: '8px',
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    padding: '0.25rem',
-    borderRadius: '4px',
-    opacity: 0,
-    transition: 'opacity 0.15s ease',
-    outline: 'none',
-  },
-  // Show delete button on hover
-  channelItemWrapperHover: {
-    '&:hover button': {
-      opacity: 1,
-    },
-  },
-  mainGrid: {
-    flex: 1,
-    padding: '1.5rem',
-    overflowY: 'auto' as const,
-    background: 'rgba(10, 10, 15, 0.2)',
-  },
-  emptyGrid: {
-    height: '100%',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#6b7280',
-  },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-    gap: '1.25rem',
-  },
-  expandedGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr',
-    height: '100%',
-  },
-  card: {
-    padding: '0.75rem',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    background: 'rgba(18, 18, 30, 0.5)',
-    height: '100%',
-    minHeight: '260px',
-  },
-  cardHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: '0.75rem',
-  },
-  cardInfo: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    overflow: 'hidden',
-  },
-  avatarMini: {
-    width: '28px',
-    height: '28px',
-    borderRadius: 'var(--radius-full)',
-  },
-  avatarFallbackMini: {
-    width: '28px',
-    height: '28px',
-    borderRadius: 'var(--radius-full)',
-    backgroundColor: 'rgba(139, 92, 246, 0.2)',
-    color: '#8b5cf6',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '0.85rem',
-    fontWeight: 600,
-  },
-  cardTitle: {
-    fontSize: '0.85rem',
-    fontWeight: 700,
-    color: '#f3f4f6',
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  cardCategory: {
-    fontSize: '0.7rem',
-    color: '#8b5cf6',
-  },
-  cardActions: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-  },
-  cardActionBtn: {
-    background: 'none',
-    border: 'none',
-    color: '#6b7280',
-    cursor: 'pointer',
-    padding: '0.25rem',
-    borderRadius: '4px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    outline: 'none',
-    '&:hover': {
-      color: '#f3f4f6',
-      backgroundColor: 'rgba(255,255,255,0.05)',
-    },
-  },
-  playerContainer: {
-    flex: 1,
-    background: '#000',
-    borderRadius: '8px',
-    overflow: 'hidden',
-    position: 'relative' as const,
-    aspectRatio: '16/9',
-    border: '1px solid rgba(255, 255, 255, 0.05)',
-  },
-  iframe: {
-    width: '100%',
-    height: '100%',
-    border: 'none',
-  },
-  offlinePlaceholder: {
-    width: '100%',
-    height: '100%',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#4b5563',
-    fontSize: '0.8rem',
-  },
-  cardFooter: {
-    marginTop: '0.5rem',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  farmingAlert: {
-    fontSize: '0.7rem',
-    color: '#10b981',
-    fontWeight: 600,
-  },
-  auctionBanner: {
-    background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(18, 18, 30, 0.8) 100%)',
-    border: '1px solid rgba(139, 92, 246, 0.3)',
-    borderRadius: '12px',
-    padding: '1.25rem',
-    marginBottom: '1.5rem',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '1rem',
-  },
-  auctionHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap' as const,
-    gap: '0.75rem',
-  },
-  auctionTag: {
-    fontSize: '0.7rem',
-    fontWeight: 800,
-    color: '#a78bfa',
-    background: 'rgba(139, 92, 246, 0.2)',
-    padding: '0.2rem 0.6rem',
-    borderRadius: '4px',
-    letterSpacing: '0.05em',
-  },
-  auctionTitleGroup: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '1rem',
-    flex: 1,
-    justifyContent: 'space-between',
-  },
-  auctionTitle: {
-    fontSize: '1.1rem',
-    fontWeight: 700,
-    color: '#fff',
-    margin: 0,
-  },
-  auctionTimer: {
-    fontSize: '0.9rem',
-    color: '#a78bfa',
-  },
-  auctionContent: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap' as const,
-    gap: '1.5rem',
-    borderTop: '1px solid rgba(255, 255, 255, 0.05)',
-    paddingTop: '1rem',
-  },
-  auctionStatus: {
-    display: 'flex',
-    gap: '2rem',
-  },
-  auctionLabel: {
-    fontSize: '0.65rem',
-    fontWeight: 700,
     color: '#9ca3af',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
+  },
+  auctionTimerVal: {
+    fontSize: '1.5rem',
+    fontWeight: 800,
+    color: '#ef4444',
+  },
+  blindIndicator: {
+    fontSize: '0.75rem',
+    color: '#fbbf24',
+    fontWeight: 600,
+    marginTop: '0.25rem',
     display: 'block',
-    marginBottom: '0.25rem',
   },
-  auctionValue: {
-    fontSize: '1rem',
-    fontWeight: 700,
-    color: '#f59e0b',
-  },
-  auctionSubvalue: {
-    fontSize: '1rem',
-    fontWeight: 700,
+  revealedIndicator: {
+    fontSize: '0.75rem',
     color: '#10b981',
+    fontWeight: 600,
+    marginTop: '0.25rem',
+    display: 'block',
   },
-  bidForm: {
-    display: 'flex',
-    gap: '0.75rem',
+  bidsListContainer: {
     flex: 1,
-    maxWidth: '500px',
-    justifyContent: 'flex-end',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    marginBottom: '1rem',
   },
-  bidSelect: {
-    flex: 1.5,
-    fontSize: '0.85rem',
-    background: 'rgba(10, 10, 15, 0.5)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
+  bidsTitle: {
+    fontSize: '0.75rem',
+    fontWeight: 700,
+    color: '#9ca3af',
+    marginBottom: '0.5rem',
+    textTransform: 'uppercase' as const,
   },
-  bidInput: {
-    width: '120px',
-    fontSize: '0.85rem',
-    background: 'rgba(10, 10, 15, 0.5)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-  },
-  bidBtn: {
-    fontSize: '0.85rem',
-    padding: '0 1rem',
-  },
-  highlightBanner: {
-    background: 'linear-gradient(90deg, rgba(16, 185, 129, 0.15) 0%, rgba(10, 10, 15, 0.8) 100%)',
-    border: '1px solid rgba(16, 185, 129, 0.3)',
+  blindBidsPlaceholder: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+    border: '1px dashed rgba(255, 255, 255, 0.05)',
     borderRadius: '8px',
-    padding: '0.75rem 1.25rem',
-    marginBottom: '1.5rem',
-    fontSize: '0.9rem',
-    color: '#10b981',
+    padding: '1rem',
+  },
+  ownBidBox: {
+    marginTop: '1rem',
+    padding: '0.5rem 0.75rem',
+    backgroundColor: 'rgba(245, 158, 11, 0.05)',
+    border: '1px solid rgba(245, 158, 11, 0.15)',
+    borderRadius: '6px',
+    width: '100%',
+    textAlign: 'center' as const,
+    fontSize: '0.8rem',
+  },
+  bidsList: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.35rem',
+  },
+  bidRow: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    padding: '0.5rem 0.75rem',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    border: '1px solid rgba(255, 255, 255, 0.05)',
+    borderRadius: '6px',
+  },
+  bidRank: {
+    fontSize: '0.75rem',
+    fontWeight: 800,
+    color: '#a78bfa',
+  },
+  bidUser: {
+    fontSize: '0.8rem',
+    color: '#d1d5db',
+  },
+  bidAmount: {
+    fontSize: '0.8rem',
+    fontWeight: 700,
+    color: '#f59e0b',
+  },
+  sidebarBidForm: {
+    borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+    paddingTop: '1rem',
+  },
+  noAuctionBox: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.5rem',
+    color: '#6b7280',
+    fontSize: '0.85rem',
+  },
+  mainContent: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    padding: '1.25rem',
+    gap: '1.25rem',
+    overflowY: 'auto' as const,
+  },
+  mainPlayerCard: {
+    flex: 1,
+    minHeight: '380px',
+    backgroundColor: 'rgba(10, 10, 15, 0.6)',
+    borderRadius: '12px',
+    overflow: 'hidden',
+  },
+  playerHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0.75rem 1rem',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+  },
+  playerName: {
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: '#f3f4f6',
+  },
+  playerHighlightTag: {
+    fontSize: '0.65rem',
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    color: '#fbbf24',
+    border: '1px solid rgba(251, 191, 36, 0.2)',
+    padding: '1px 6px',
+    borderRadius: '4px',
+    fontWeight: 700,
+  },
+  resetRotationBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#a78bfa',
+    fontSize: '0.75rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    padding: 0,
+  },
+  iframeWrapper: {
+    flex: 1,
+    backgroundColor: '#000',
+    position: 'relative' as const,
+  },
+  mainIframe: {
+    width: '100%',
+    height: '100%',
+    border: 'none',
+    display: 'block',
+  },
+  noStreamPlaceholder: {
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    textAlign: 'center' as const,
+    padding: '2rem',
+  },
+  vitrinesPanel: {
+    backgroundColor: 'rgba(18, 18, 28, 0.3)',
+    border: '1px solid rgba(255, 255, 255, 0.05)',
+    borderRadius: '10px',
+    padding: '0.85rem',
+  },
+  vitrinesPanelHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginBottom: '0.75rem',
+  },
+  vitrinesPanelTitle: {
+    fontSize: '0.75rem',
+    fontWeight: 700,
+    color: '#fbbf24',
+    textTransform: 'uppercase' as const,
+  },
+  vitrinesGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(5, 1fr)',
+    gap: '0.75rem',
+  },
+  vitrineMiniCard: {
+    height: '100px',
+    backgroundColor: 'rgba(10, 10, 15, 0.8)',
+    borderRadius: '8px',
+    overflow: 'hidden',
+    padding: '0.35rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  vitrineMiniName: {
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    color: '#d1d5db',
+    marginBottom: '0.25rem',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  miniOffline: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+  },
+  miniEmpty: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px dashed rgba(255, 255, 255, 0.05)',
+    borderRadius: '4px',
+  },
+  modalOverlay: {
+    position: 'fixed' as const,
+    top: 0,
+    left: 0,
+    width: '100vw',
+    height: '100vh',
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  modalCard: {
+    width: '90%',
+    maxWidth: '720px',
+    maxHeight: '90vh',
+    overflowY: 'auto' as const,
+    backgroundColor: '#0c0c14',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    borderRadius: '12px',
+    padding: '1.5rem',
+  },
+  modalHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+    paddingBottom: '0.75rem',
+    marginBottom: '1rem',
+  },
+  modalTitle: {
+    fontSize: '1.15rem',
+    fontWeight: 800,
+    color: '#f3f4f6',
+  },
+  closeBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#9ca3af',
+    cursor: 'pointer',
+  },
+  modalBody: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '1.25rem',
+  },
+  productsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: '0.85rem',
+  },
+  productCard: {
+    border: '1px solid',
+    borderRadius: '10px',
+    padding: '1rem',
+    cursor: 'pointer',
+    position: 'relative' as const,
+    transition: 'all 0.15s ease',
+  },
+  vipBadgeBig: {
+    position: 'absolute' as const,
+    top: '10px',
+    right: '10px',
+    backgroundColor: '#fbbf24',
+    color: '#000',
+    fontSize: '0.7rem',
+    fontWeight: 800,
+    padding: '2px 8px',
+    borderRadius: '4px',
+  },
+  coinsIconBadge: {
+    position: 'absolute' as const,
+    top: '10px',
+    right: '10px',
+  },
+  productTitle: {
+    fontSize: '0.9rem',
+    fontWeight: 700,
+    color: '#f3f4f6',
+    marginBottom: '0.25rem',
+  },
+  productDesc: {
+    fontSize: '0.75rem',
+    color: '#9ca3af',
+    lineHeight: 1.4,
+    marginBottom: '0.75rem',
+  },
+  productPrice: {
+    fontSize: '1rem',
+    fontWeight: 800,
+    color: '#10b981',
+  },
+  checkoutBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+    border: '1px solid rgba(255, 255, 255, 0.05)',
+    borderRadius: '10px',
+    padding: '1rem',
+  },
+  checkoutTitle: {
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: '#f3f4f6',
+    marginBottom: '0.5rem',
+  },
+  pixInfoCard: {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    border: '1px solid rgba(255, 255, 255, 0.05)',
+    borderRadius: '8px',
+    padding: '0.75rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.35rem',
+  },
+  pixRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: '0.8rem',
+    color: '#d1d5db',
+  },
+  successAlert: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    border: '1px solid rgba(16, 185, 129, 0.2)',
+    padding: '0.75rem',
+    borderRadius: '8px',
+    fontSize: '0.8rem',
+    color: '#10b981',
+  },
+  historyContainer: {
+    borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+    paddingTop: '1rem',
+  },
+  historyTitle: {
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: '#9ca3af',
+    marginBottom: '0.5rem',
+  },
+  historyList: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.5rem',
+    maxHeight: '150px',
+    overflowY: 'auto' as const,
+  },
+  historyRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0.5rem 0.75rem',
+    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+    border: '1px solid rgba(255, 255, 255, 0.03)',
+    borderRadius: '6px',
+  },
+  historyDate: {
+    fontSize: '0.65rem',
+    color: '#6b7280',
+    display: 'block',
+  },
+  statusBadge: {
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    padding: '2px 6px',
+    borderRadius: '4px',
+    textTransform: 'uppercase' as const,
   },
 };
