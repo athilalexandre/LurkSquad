@@ -48,7 +48,7 @@ async function main() {
       max: config.rateLimit.max,
       timeWindow: config.rateLimit.timeWindow,
       errorResponseBuilder: (request, context) => ({
-        error: `Muitas requisições. Tente novamente em ${Math.ceil(context.after / 1000)} segundos.`,
+        error: `Muitas requisições. Tente novamente em ${Math.ceil((context.after as any) / 1000)} segundos.`,
       }),
     });
 
@@ -64,11 +64,25 @@ async function main() {
     await fastify.register(auctionRoutes, { prefix: '/api/auctions' });
     await fastify.register(websocketRoutes); // WS mounts on /ws inside the handler
 
-    // Start Auction Scheduler (every 10 seconds)
+    // Start Schedulers
     const { checkAndCloseAuctions } = await import('./services/auctionService.js');
+    const { runBackgroundChannelSync } = await import('./services/kickService.js');
+
+    let lastChannelSync = 0;
+
     auctionInterval = setInterval(async () => {
       try {
         await checkAndCloseAuctions();
+
+        // Background channel sync check
+        const now = Date.now();
+        const configGlobal = await prisma.appConfig.findUnique({ where: { id: 'global' } });
+        const intervalMs = (configGlobal?.channelCheckIntervalSec ?? 300) * 1000;
+
+        if (now - lastChannelSync >= intervalMs) {
+          lastChannelSync = now;
+          runBackgroundChannelSync().catch(err => fastify.log.error(err));
+        }
       } catch (err) {
         fastify.log.error(err);
       }

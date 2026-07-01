@@ -15,7 +15,7 @@ export async function createAuditLog(
       actorId: params.actorId,
       action: params.action,
       targetId: params.targetId,
-      details: params.details ?? undefined,
+      details: params.details ? (params.details as any) : undefined,
       ipAddress: params.ipAddress,
     },
   });

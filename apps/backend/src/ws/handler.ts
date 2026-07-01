@@ -73,7 +73,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
       connection.send(JSON.stringify({ type: 'welcome', status: 'connected' }));
 
       // 3. Handle messages
-      connection.on('message', async (messageData) => {
+      connection.on('message', async (messageData: any) => {
         try {
           const payload = JSON.parse(messageData.toString());
 
